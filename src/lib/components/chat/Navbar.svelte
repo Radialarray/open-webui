@@ -19,6 +19,7 @@
 	import { slide } from 'svelte/transition';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
+	import { updateUserSettings } from '$lib/apis/users';
 
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import ModelSelector from '../chat/ModelSelector.svelte';
@@ -59,6 +60,39 @@
 
 	let showShareChatModal = false;
 	let showDownloadChatModal = false;
+	let showModelSelectorDialog = false;
+
+	const multiModelDisplayModes = [
+		{ value: 'tabs', label: 'Tabs' },
+		{ value: 'side-by-side', label: 'Side-by-side' },
+		{ value: 'focus', label: 'Focus' },
+		{ value: 'podcast', label: 'Podcast' }
+	] as const;
+
+	const getMultiModelDisplayMode = () => {
+		if ($settings?.multiModelDisplayMode) {
+			return $settings.multiModelDisplayMode;
+		}
+
+		return $settings?.displayMultiModelResponsesInTabs ? 'tabs' : 'side-by-side';
+	};
+
+	const updateMultiModelDisplayMode = async (event: Event) => {
+		const multiModelDisplayMode = (event.currentTarget as HTMLSelectElement).value;
+		const updatedSettings = {
+			...$settings,
+			multiModelDisplayMode,
+			displayMultiModelResponsesInTabs: multiModelDisplayMode === 'tabs'
+		};
+
+		await settings.set(updatedSettings);
+
+		if (localStorage.token) {
+			await updateUserSettings(localStorage.token, { ui: updatedSettings }).catch((error) => {
+				console.error(error);
+			});
+		}
+	};
 </script>
 
 <ShareChatModal bind:show={showShareChatModal} chatId={$chatId} />
@@ -86,7 +120,7 @@
 		></div>
 
 		<div class=" flex max-w-full w-full mx-auto px-1.5 md:px-2 pt-0.5 bg-transparent">
-			<div class="flex items-center w-full max-w-full">
+			<div class="flex min-w-0 items-center w-full max-w-full">
 				{#if $mobile && !$showSidebar}
 					<div
 						class="-translate-x-0.5 mr-1 mt-1 self-start flex flex-none items-center text-gray-600 dark:text-gray-400"
@@ -110,13 +144,11 @@
 					class="flex-1 overflow-hidden max-w-full mt-0.5 py-0.5
 			{$showSidebar ? 'ml-1' : ''}
 			"
-				>
-					{#if showModelSelector}
-						<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
-					{/if}
-				</div>
+				></div>
 
-				<div class="self-start flex flex-none items-center text-gray-600 dark:text-gray-400">
+				<div
+					class="self-start flex min-w-0 max-w-full items-center text-gray-600 dark:text-gray-400"
+				>
 					<!-- <div class="md:hidden flex self-center w-[1px] h-5 mx-2 bg-gray-300 dark:bg-stone-700" /> -->
 
 					{#if $user?.role === 'user' ? ($user?.permissions?.chat?.temporary ?? true) && !($user?.permissions?.chat?.temporary_enforced ?? false) : true}
@@ -189,7 +221,50 @@
 						</Tooltip>
 					{/if}
 
+					{#if showModelSelector && !(shareEnabled && chat && (chat.id || $temporaryChatEnabled))}
+						<div class="min-w-0 shrink-0 px-1">
+							<ModelSelector
+								bind:selectedModels
+								showSetDefault={!shareEnabled}
+								buttonOnly={true}
+								compactButton={true}
+								buttonClassName="w-[min(16rem,calc(100vw-13rem))] sm:w-52 lg:w-60"
+								bind:showDialog={showModelSelectorDialog}
+							/>
+						</div>
+					{/if}
+
 					{#if shareEnabled && chat && (chat.id || $temporaryChatEnabled)}
+						{#if showModelSelector}
+							<div class="min-w-0 shrink-0 px-1">
+								<ModelSelector
+									bind:selectedModels
+									showSetDefault={!shareEnabled}
+									buttonOnly={true}
+									compactButton={true}
+									buttonClassName="w-[min(16rem,calc(100vw-13rem))] sm:w-52 lg:w-60"
+									bind:showDialog={showModelSelectorDialog}
+								/>
+							</div>
+						{/if}
+
+						{#if selectedModels?.length > 1}
+							<div class="flex shrink-0 items-center px-1">
+								<label class="sr-only" for="chat-ui-mode-selector">{$i18n.t('UI mode')}</label>
+								<select
+									id="chat-ui-mode-selector"
+									class="h-10 cursor-pointer rounded-xl border border-gray-200 dark:border-gray-800 bg-transparent px-2.5 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-850 transition"
+									value={getMultiModelDisplayMode()}
+									aria-label={$i18n.t('UI mode')}
+									on:change={updateMultiModelDisplayMode}
+								>
+									{#each multiModelDisplayModes as mode}
+										<option value={mode.value}>{$i18n.t(mode.label)}</option>
+									{/each}
+								</select>
+							</div>
+						{/if}
+
 						<Menu
 							{chat}
 							{shareEnabled}

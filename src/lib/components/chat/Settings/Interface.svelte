@@ -44,7 +44,7 @@
 	let highContrastMode = false;
 
 	let detectArtifacts = true;
-	let displayMultiModelResponsesInTabs = false;
+	let multiModelDisplayMode: 'tabs' | 'side-by-side' | 'focus' | 'podcast' = 'side-by-side';
 
 	let richTextInput = true;
 	let showFormattingToolbar = false;
@@ -213,7 +213,11 @@
 		showEmojiInCall = $settings?.showEmojiInCall ?? false;
 		voiceInterruption = $settings?.voiceInterruption ?? false;
 
-		displayMultiModelResponsesInTabs = $settings?.displayMultiModelResponsesInTabs ?? false;
+		multiModelDisplayMode = $settings?.multiModelDisplayMode
+			? $settings.multiModelDisplayMode
+			: ($settings?.displayMultiModelResponsesInTabs ?? false)
+				? 'tabs'
+				: 'side-by-side';
 		chatFadeStreamingText = $settings?.chatFadeStreamingText ?? true;
 
 		richTextInput = $settings?.richTextInput ?? true;
@@ -986,20 +990,28 @@
 			</div>
 
 			<div>
-				<div class=" py-0.5 flex w-full justify-between">
-					<div id="keep-followup-prompts-label" class=" self-center text-xs">
-						{$i18n.t('Display Multi-model Responses in Tabs')}
+				<div class="py-0.5 flex w-full justify-between gap-4">
+					<div id="multi-model-display-mode-label" class="self-center text-xs">
+						{$i18n.t('Multi-model Display Mode')}
 					</div>
 
-					<div class="flex items-center gap-2 p-1">
-						<Switch
-							ariaLabelledbyId="keep-followup-prompts-label"
-							tooltip={true}
-							bind:state={displayMultiModelResponsesInTabs}
+					<div class="flex items-center relative">
+						<select
+							class="w-fit min-w-40 pr-8 rounded-sm px-2 p-1 text-xs bg-transparent outline-hidden text-right"
+							bind:value={multiModelDisplayMode}
+							aria-labelledby="multi-model-display-mode-label"
 							on:change={() => {
-								saveSettings({ displayMultiModelResponsesInTabs });
+								saveSettings({
+									multiModelDisplayMode,
+									displayMultiModelResponsesInTabs: multiModelDisplayMode === 'tabs'
+								});
 							}}
-						/>
+						>
+							<option value="tabs">{$i18n.t('Tabs')}</option>
+							<option value="side-by-side">{$i18n.t('Side-by-side')}</option>
+							<option value="focus">{$i18n.t('Focus')}</option>
+							<option value="podcast">{$i18n.t('Podcast')}</option>
+						</select>
 					</div>
 				</div>
 			</div>

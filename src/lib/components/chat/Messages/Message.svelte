@@ -100,7 +100,7 @@
 				{topPadding}
 			/>
 		{:else}
-			{#key messageId}
+			{#key `${messageId}:${$settings?.multiModelDisplayMode ?? ($settings?.displayMultiModelResponsesInTabs ? 'tabs' : 'side-by-side')}`}
 				<MultiResponseMessages
 					bind:history
 					{chatId}

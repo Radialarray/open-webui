@@ -26,7 +26,16 @@ const pypiPackages = ['black', 'pathspec', 'mypy_extensions', 'pytokens'];
 
 import { loadPyodide } from 'pyodide';
 import { setGlobalDispatcher, ProxyAgent } from 'undici';
-import { writeFile, readFile, copyFile, readdir, rmdir, access } from 'fs/promises';
+import { writeFile, readFile, copyFile, readdir, rm, access } from 'fs/promises';
+
+async function fileExists(path) {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Loading network proxy configurations from the environment variables.
@@ -61,6 +70,22 @@ function initNetworkProxyFromEnv() {
 async function downloadPackages() {
 	console.log('Setting up pyodide + micropip');
 
+	const hasCachedPackageJson = await fileExists('static/pyodide/package.json');
+	const hasCachedLock = await fileExists('static/pyodide/pyodide-lock.json');
+	if (hasCachedPackageJson && hasCachedLock) {
+		const installedPyodidePackageJson = JSON.parse(
+			await readFile('node_modules/pyodide/package.json', 'utf-8')
+		);
+		const pyodideVersion = installedPyodidePackageJson.version.replace('^', '');
+		const pyodidePackageJson = JSON.parse(await readFile('static/pyodide/package.json'));
+		const pyodidePackageVersion = pyodidePackageJson.version.replace('^', '');
+
+		if (pyodideVersion === pyodidePackageVersion) {
+			console.log('Using cached static/pyodide assets; skipping network fetch');
+			return;
+		}
+	}
+
 	let pyodide;
 	try {
 		pyodide = await loadPyodide({
@@ -71,8 +96,10 @@ async function downloadPackages() {
 		return;
 	}
 
-	const packageJson = JSON.parse(await readFile('package.json'));
-	const pyodideVersion = packageJson.dependencies.pyodide.replace('^', '');
+	const installedPyodidePackageJson = JSON.parse(
+		await readFile('node_modules/pyodide/package.json', 'utf-8')
+	);
+	const pyodideVersion = installedPyodidePackageJson.version.replace('^', '');
 
 	try {
 		const pyodidePackageJson = JSON.parse(await readFile('static/pyodide/package.json'));
@@ -80,7 +107,7 @@ async function downloadPackages() {
 
 		if (pyodideVersion !== pyodidePackageVersion) {
 			console.log('Pyodide version mismatch, removing static/pyodide directory');
-			await rmdir('static/pyodide', { recursive: true });
+			await rm('static/pyodide', { recursive: true, force: true });
 		}
 	} catch (err) {
 		console.log('Pyodide package not found, proceeding with download.', err);

@@ -179,6 +179,7 @@ type OllamaModelDetails = {
 };
 
 type Settings = {
+	multiModelDisplayMode?: 'tabs' | 'side-by-side' | 'focus' | 'podcast';
 	pinnedModels?: never[];
 	toolServers?: never[];
 	detectArtifacts?: boolean;
@@ -251,7 +252,10 @@ type ModelOptions = {
 
 type AudioSettings = {
 	stt: any;
-	tts: any;
+	tts: {
+		podcastVoice?: string;
+		[key: string]: any;
+	};
 	STTEngine?: string;
 	TTSEngine?: string;
 	speaker?: string;
