@@ -7,6 +7,7 @@
 		banners,
 		chatId,
 		config,
+		models,
 		mobile,
 		settings,
 		showArchivedChats,
@@ -23,6 +24,7 @@
 
 	import ShareChatModal from '../chat/ShareChatModal.svelte';
 	import ModelSelector from '../chat/ModelSelector.svelte';
+	import Modal from '../common/Modal.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Menu from '$lib/components/layout/Navbar/Menu.svelte';
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
@@ -39,6 +41,8 @@
 	import ChatPlus from '../icons/ChatPlus.svelte';
 	import ChatCheck from '../icons/ChatCheck.svelte';
 	import Knobs from '../icons/Knobs.svelte';
+	import ChevronDown from '../icons/ChevronDown.svelte';
+	import XMark from '../icons/XMark.svelte';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	const i18n = getContext('i18n');
@@ -93,9 +97,40 @@
 			});
 		}
 	};
+
+	const getModelSelectorLabel = () => {
+		const modelNames = (selectedModels ?? [])
+			.map((modelId) => $models.find((model) => model.id === modelId)?.name)
+			.filter(Boolean);
+
+		if (modelNames.length === 0) {
+			return $i18n.t('Select a model');
+		}
+
+		return modelNames.join(', ');
+	};
 </script>
 
 <ShareChatModal bind:show={showShareChatModal} chatId={$chatId} />
+
+<Modal bind:show={showModelSelectorDialog} size="md">
+	<div class="flex items-center justify-between px-5 pt-4 pb-2 text-gray-900 dark:text-gray-100">
+		<div class="text-lg font-medium">{$i18n.t('Select a model')}</div>
+		<button
+			class="self-center"
+			aria-label={$i18n.t('Close')}
+			on:click={() => {
+				showModelSelectorDialog = false;
+			}}
+		>
+			<XMark className={'size-5'} />
+		</button>
+	</div>
+
+	<div class="px-5 pb-5 pt-2">
+		<ModelSelector bind:selectedModels showSetDefault={!shareEnabled} />
+	</div>
+</Modal>
 
 <button
 	id="new-chat-button"
@@ -223,28 +258,36 @@
 
 					{#if showModelSelector && !(shareEnabled && chat && (chat.id || $temporaryChatEnabled))}
 						<div class="min-w-0 shrink-0 px-1">
-							<ModelSelector
-								bind:selectedModels
-								showSetDefault={!shareEnabled}
-								buttonOnly={true}
-								compactButton={true}
-								buttonClassName="w-[min(16rem,calc(100vw-13rem))] sm:w-52 lg:w-60"
-								bind:showDialog={showModelSelectorDialog}
-							/>
+							<Tooltip content={$i18n.t('Select a model')}>
+								<button
+									class="flex h-10 w-[min(16rem,calc(100vw-13rem))] items-center justify-between gap-2 rounded-xl border border-gray-200 dark:border-gray-800 bg-transparent px-3 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-850 transition"
+									type="button"
+									on:click={() => {
+										showModelSelectorDialog = true;
+									}}
+								>
+									<span class="min-w-0 truncate text-left">{getModelSelectorLabel()}</span>
+									<ChevronDown className="size-4 shrink-0" strokeWidth="1.75" />
+								</button>
+							</Tooltip>
 						</div>
 					{/if}
 
 					{#if shareEnabled && chat && (chat.id || $temporaryChatEnabled)}
 						{#if showModelSelector}
 							<div class="min-w-0 shrink-0 px-1">
-								<ModelSelector
-									bind:selectedModels
-									showSetDefault={!shareEnabled}
-									buttonOnly={true}
-									compactButton={true}
-									buttonClassName="w-[min(16rem,calc(100vw-13rem))] sm:w-52 lg:w-60"
-									bind:showDialog={showModelSelectorDialog}
-								/>
+								<Tooltip content={$i18n.t('Select a model')}>
+									<button
+										class="flex h-10 w-[min(16rem,calc(100vw-13rem))] items-center justify-between gap-2 rounded-xl border border-gray-200 dark:border-gray-800 bg-transparent px-3 text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-850 transition"
+										type="button"
+										on:click={() => {
+											showModelSelectorDialog = true;
+										}}
+									>
+										<span class="min-w-0 truncate text-left">{getModelSelectorLabel()}</span>
+										<ChevronDown className="size-4 shrink-0" strokeWidth="1.75" />
+									</button>
+								</Tooltip>
 							</div>
 						{/if}
 
