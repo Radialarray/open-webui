@@ -1,3 +1,7 @@
+<script lang="ts" context="module">
+	const focusSelectedModelIdxByParentId = new Map<string, number>();
+</script>
+
 <script lang="ts">
 	import dayjs from 'dayjs';
 	import { onMount, tick, getContext } from 'svelte';
@@ -5,7 +9,6 @@
 	import { mobile, models, settings, config, TTSWorker } from '$lib/stores';
 
 	import { generateMoACompletion } from '$lib/apis';
-	import { updateChatById } from '$lib/apis/chats';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 
 	import ResponseMessage from './ResponseMessage.svelte';
@@ -20,10 +23,8 @@
 	import { removeAllDetails } from '$lib/utils';
 	import { buildFallbackWaveformBars, extractWaveformBarsFromBlob } from '$lib/utils/podcast';
 	import localizedFormat from 'dayjs/plugin/localizedFormat';
-	import ProfileImage from './ProfileImage.svelte';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
-	import { WEBUI_BASE_URL } from '$lib/constants';
 	import equal from 'fast-deep-equal';
 	const i18n = getContext('i18n');
 	dayjs.extend(localizedFormat);
@@ -60,6 +61,7 @@
 	let parentMessage;
 	let groupedMessageIds = {};
 	let groupedMessageIdsIdx = {};
+	let selectedMessageId = null;
 
 	let selectedModelIdx = null;
 	let podcastAudioReady = {};
@@ -570,30 +572,37 @@
 			}
 		}, {});
 
-		selectedModelIdx = history.messages[messageId]?.modelIdx;
+		const initialSelectedModelIdx = history.messages[messageId]?.modelIdx;
+		const persistedSelectedModelIdx = parentMessage?.id
+			? focusSelectedModelIdxByParentId.get(parentMessage.id)
+			: undefined;
+
+		selectedModelIdx =
+			persistedSelectedModelIdx !== undefined && groupedMessageIds[persistedSelectedModelIdx]
+				? persistedSelectedModelIdx
+				: initialSelectedModelIdx;
 
 		await tick();
 	};
 
-	const onGroupClick = async (_messageId, modelIdx) => {
+	const selectModel = (modelIdx) => {
+		selectedModelIdx = Number(modelIdx);
+		if (parentMessage?.id && selectedModelIdx !== null) {
+			focusSelectedModelIdxByParentId.set(parentMessage.id, selectedModelIdx);
+		}
+	};
+
+	const selectModelAndOpenGroup = (_messageId, modelIdx) => {
+		selectModel(modelIdx);
+		onGroupClick(_messageId, Number(modelIdx));
+	};
+
+	const onGroupClick = (_messageId, modelIdx) => {
 		if (displayMode === 'podcast' && podcastActiveMessageId !== _messageId) {
 			resetPodcastQueueState();
 		}
 		podcastActiveMessageId = _messageId;
-		if (messageId != _messageId) {
-			let currentMessageId = _messageId;
-			let messageChildrenIds = history.messages[currentMessageId].childrenIds;
-			while (messageChildrenIds.length !== 0) {
-				currentMessageId = messageChildrenIds.at(-1);
-				messageChildrenIds = history.messages[currentMessageId].childrenIds;
-			}
-			history.currentId = currentMessageId;
-			selectedModelIdx = modelIdx;
-
-			await tick();
-			await updateChat();
-			triggerScroll();
-		}
+		selectModel(modelIdx);
 	};
 
 	const mergeResponsesHandler = async () => {
@@ -623,6 +632,13 @@
 	$: useTabsLayout = displayMode === 'tabs';
 	$: useFocusLayout = displayMode === 'focus' || displayMode === 'podcast';
 	$: useMobileFocusLayout = useFocusLayout && $mobile;
+	$: selectedMessageId =
+		selectedModelIdx !== null && groupedMessageIds[selectedModelIdx]
+			? groupedMessageIds[selectedModelIdx].messageIds[groupedMessageIdsIdx[selectedModelIdx]]
+			: null;
+	$: if (parentMessage?.id && selectedModelIdx !== null) {
+		focusSelectedModelIdxByParentId.set(parentMessage.id, selectedModelIdx);
+	}
 	$: if (displayMode === 'podcast' && podcastSelectedVoice !== lastPodcastSelectedVoice) {
 		lastPodcastSelectedVoice = podcastSelectedVoice;
 		resetPodcastQueueState();
@@ -647,8 +663,6 @@
 		selectedModelIdx !== null &&
 		groupedMessageIds[selectedModelIdx]
 	) {
-		const selectedMessageId =
-			groupedMessageIds[selectedModelIdx].messageIds[groupedMessageIdsIdx[selectedModelIdx]];
 		if (!podcastActiveMessageId) {
 			podcastActiveMessageId = selectedMessageId;
 		}
@@ -699,13 +713,7 @@
 										class="min-w-fit {selectedModelIdx == modelIdx
 											? ' dark:border-gray-300 '
 											: ' opacity-35 border-transparent'} pb-1.5 px-2.5 transition border-b-2"
-										on:click={async () => {
-											if (selectedModelIdx != modelIdx) {
-												selectedModelIdx = modelIdx;
-											}
-
-											onGroupClick(_messageId, modelIdx);
-										}}
+										on:click={() => selectModelAndOpenGroup(_messageId, modelIdx)}
 									>
 										<div class="flex items-center gap-1.5">
 											<div class="-translate-y-[1px]">
@@ -719,12 +727,12 @@
 					</div>
 
 					{#if selectedModelIdx !== null}
-						{#key history.currentId}
+						{#key selectedMessageId}
 							{#if message}
 								<ResponseMessage
 									{chatId}
 									{history}
-									messageId={message?.id}
+									messageId={selectedMessageId}
 									{selectedModels}
 									isLastMessage={true}
 									siblings={groupedMessageIds[selectedModelIdx].messageIds}
@@ -783,10 +791,7 @@
 																history.messages[previewMessageId]?.content ?? previewMessageId,
 																32
 															)}
-														on:select={() => {
-															selectedModelIdx = Number(modelIdx);
-															onGroupClick(previewMessageId, Number(modelIdx));
-														}}
+														on:select={() => selectModelAndOpenGroup(previewMessageId, modelIdx)}
 													/>
 												{/key}
 											{:else}
@@ -796,10 +801,7 @@
 													modelIdx
 														? 'border-emerald-300 bg-emerald-50/80 dark:border-emerald-500/40 dark:bg-emerald-500/10'
 														: 'border-gray-200/80 bg-white/80 hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900/70 dark:hover:border-gray-700'}"
-													on:click={() => {
-														selectedModelIdx = Number(modelIdx);
-														onGroupClick(previewMessageId, Number(modelIdx));
-													}}
+													on:click={() => selectModelAndOpenGroup(previewMessageId, modelIdx)}
 												>
 													<div
 														class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-2 truncate"
@@ -822,11 +824,6 @@
 					<div class="w-full flex flex-col lg:flex-row gap-4 lg:gap-5 items-start">
 						<div class="w-full lg:flex-[1.75] min-w-0">
 							{#if selectedModelIdx !== null && groupedMessageIds[selectedModelIdx]}
-								{@const selectedMessageId =
-									groupedMessageIds[selectedModelIdx].messageIds[
-										groupedMessageIdsIdx[selectedModelIdx]
-									]}
-
 								{#if displayMode === 'podcast'}
 									<PodcastPane
 										{chatId}
@@ -847,7 +844,7 @@
 										{readOnly}
 									/>
 								{:else}
-									{#key history.currentId}
+									{#key selectedMessageId}
 										<ResponseMessage
 											{chatId}
 											{history}
@@ -909,10 +906,7 @@
 															history.messages[previewMessageId]?.content ?? previewMessageId,
 															32
 														)}
-													on:select={() => {
-														selectedModelIdx = Number(modelIdx);
-														onGroupClick(previewMessageId, Number(modelIdx));
-													}}
+													on:select={() => selectModelAndOpenGroup(previewMessageId, modelIdx)}
 												/>
 											{/key}
 										{:else}
@@ -922,10 +916,7 @@
 												modelIdx
 													? 'border-emerald-300 bg-emerald-50/80 dark:border-emerald-500/40 dark:bg-emerald-500/10'
 													: 'border-gray-200/80 bg-white/80 hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900/70 dark:hover:border-gray-700'}"
-												on:click={() => {
-													selectedModelIdx = Number(modelIdx);
-													onGroupClick(previewMessageId, Number(modelIdx));
-												}}
+												on:click={() => selectModelAndOpenGroup(previewMessageId, modelIdx)}
 											>
 												<div class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
 													{$models.find((m) => m.id === history.messages[previewMessageId]?.model)

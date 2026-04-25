@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { marked } from 'marked';
 	import Fuse from 'fuse.js';
 
 	import dayjs from '$lib/dayjs';
@@ -11,29 +10,17 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 
 	import { createEventDispatcher, onMount, getContext, tick } from 'svelte';
-	import { goto } from '$app/navigation';
 
 	import { deleteModel, getOllamaVersion, pullModel, unloadModel } from '$lib/apis/ollama';
 
-	import {
-		user,
-		MODEL_DOWNLOAD_POOL,
-		models,
-		mobile,
-		temporaryChatEnabled,
-		settings,
-		config
-	} from '$lib/stores';
+	import { user, MODEL_DOWNLOAD_POOL, models, mobile, settings, config } from '$lib/stores';
 	import { toast } from 'svelte-sonner';
-	import { capitalizeFirstLetter, sanitizeResponseContent, splitStream } from '$lib/utils';
 	import { getModels } from '$lib/apis';
+	import { splitStream } from '$lib/utils';
 
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
-	import Check from '$lib/components/icons/Check.svelte';
 	import Search from '$lib/components/icons/Search.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import Switch from '$lib/components/common/Switch.svelte';
-	import ChatBubbleOval from '$lib/components/icons/ChatBubbleOval.svelte';
 
 	import ModelItem from './ModelItem.svelte';
 
@@ -56,6 +43,7 @@
 
 	export let className = 'w-[32rem]';
 	export let triggerClassName = 'text-lg';
+	export let buttonId = '';
 
 	export let pinModelHandler: (modelId: string) => void = () => {};
 
@@ -94,8 +82,13 @@
 			updatePosition();
 			window.setTimeout(() => document.getElementById('model-search-input')?.focus(), 0);
 		} else {
-			document.getElementById(`model-selector-${id}-button`)?.blur();
+			document.getElementById(buttonId || `model-selector-${id}-button`)?.blur();
 		}
+	};
+
+	const closeAndBlur = () => {
+		show = false;
+		document.getElementById(buttonId || `model-selector-${id}-button`)?.blur();
 	};
 
 	const handlePointerDown = (e: PointerEvent) => {
@@ -107,16 +100,14 @@
 		) {
 			return;
 		}
-		show = false;
-		document.getElementById(`model-selector-${id}-button`)?.blur();
+		closeAndBlur();
 	};
 
 	const handleKeydown = (e: KeyboardEvent) => {
 		if (show && e.key === 'Escape') {
 			e.preventDefault();
 			e.stopPropagation();
-			show = false;
-			document.getElementById(`model-selector-${id}-button`)?.blur();
+			closeAndBlur();
 		}
 	};
 
@@ -512,7 +503,7 @@
 			: placeholder}
 		aria-haspopup="listbox"
 		aria-expanded={show}
-		id="model-selector-{id}-button"
+		id={buttonId || `model-selector-${id}-button`}
 		type="button"
 		on:click={toggleOpen}
 	>
@@ -568,7 +559,8 @@
 								on:keydown={(e) => {
 									if (e.code === 'Enter' && filteredItems.length > 0) {
 										value = filteredItems[selectedModelIdx].value;
-										show = false;
+										dispatch('select', { value });
+										closeAndBlur();
 										return; // dont need to scroll on selection
 									} else if (e.code === 'ArrowDown') {
 										e.stopPropagation();
@@ -744,8 +736,8 @@
 										onClick={() => {
 											value = item.value;
 											selectedModelIdx = index;
-
-											show = false;
+											dispatch('select', { value });
+											closeAndBlur();
 										}}
 									/>
 								{/each}
