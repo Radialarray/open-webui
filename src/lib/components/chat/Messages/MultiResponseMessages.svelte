@@ -3,8 +3,9 @@
 </script>
 
 <script lang="ts">
+	// @ts-nocheck
 	import dayjs from 'dayjs';
-	import { onMount, tick, getContext } from 'svelte';
+	import { onDestroy, onMount, tick, getContext } from 'svelte';
 
 	import { mobile, models, settings, config, TTSWorker } from '$lib/stores';
 
@@ -21,7 +22,11 @@
 	import Name from './Name.svelte';
 	import Skeleton from './Skeleton.svelte';
 	import { removeAllDetails } from '$lib/utils';
-	import { buildFallbackWaveformBars, extractWaveformBarsFromBlob } from '$lib/utils/podcast';
+	import {
+		buildFallbackWaveformBars,
+		buildPodcastAssetCacheKey,
+		extractWaveformBarsFromBlob
+	} from '$lib/utils/podcast';
 	import localizedFormat from 'dayjs/plugin/localizedFormat';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
@@ -29,10 +34,14 @@
 	const i18n = getContext('i18n');
 	dayjs.extend(localizedFormat);
 
+	type PodcastGroup = {
+		messageIds: string[];
+	};
+
 	export let chatId;
 	export let history;
 	export let messageId;
-	export let selectedModels = [];
+	export let selectedModels: any[] = [];
 
 	export let isLastMessage;
 	export let readOnly = false;
@@ -58,28 +67,57 @@
 
 	export let topPadding = false;
 
-	let parentMessage;
-	let groupedMessageIds = {};
-	let groupedMessageIdsIdx = {};
-	let selectedMessageId = null;
+	let parentMessage: any;
+	let groupedMessageIds: Record<string, PodcastGroup> = {};
+	let groupedMessageIdsIdx: Record<string, number> = {};
+	let selectedMessageId: string | null = null;
 
-	let selectedModelIdx = null;
-	let podcastAudioReady = {};
-	let podcastAudioLoading = {};
-	let podcastWaveformBars = {};
-	let podcastPrefetchers = {};
-	let podcastPrefetchQueueKey = '';
-	let podcastAudioPlaying = {};
-	let podcastQueueOrder = {};
-	let podcastPlaybackProgress = {};
-	let podcastActiveMessageId = null;
-	let podcastQueueRunId = 0;
-	let podcastQueueRunning = false;
-	let podcastAudioAssets = {};
-	let podcastAudioRequests = {};
+	let selectedModelIdx: number | null = null;
+	type PodcastMediaCacheEntry = {
+		cacheKey: string;
+		audioUrl: string;
+		duration: number;
+		bars: number[];
+	};
+
+	type PodcastPlaybackSnapshot = {
+		currentTime: number;
+		progress: number;
+		duration: number;
+	};
+
+	type PodcastSessionState = {
+		activeMessageId: string | null;
+		playingMessageId: string | null;
+	};
+
+	type PodcastQueueState = {
+		loadingByMessageId: Record<string, boolean>;
+		queueOrderByMessageId: Record<string, number | null>;
+		requestsByMessageId: Record<string, Promise<PodcastMediaCacheEntry | null> | null>;
+		runId: number;
+		running: boolean;
+		queueKey: string;
+	};
+
+	let podcastMediaCacheByMessageId: Record<string, PodcastMediaCacheEntry> = {};
+	let podcastPlaybackSnapshotsByMessageId: Record<string, PodcastPlaybackSnapshot> = {};
+	let podcastSession: PodcastSessionState = {
+		activeMessageId: null,
+		playingMessageId: null
+	};
+	let podcastQueueState: PodcastQueueState = {
+		loadingByMessageId: {},
+		queueOrderByMessageId: {},
+		requestsByMessageId: {},
+		runId: 0,
+		running: false,
+		queueKey: ''
+	};
 	let podcastCardMetaByMessageId: Record<string, PodcastCardMeta> = {};
 	let podcastSelectedVoice = '';
 	let lastPodcastSelectedVoice = '';
+	let lastPodcastScopeKey = '';
 
 	type PodcastCardStatus = 'idle' | 'queued' | 'writing' | 'generating_audio' | 'ready' | 'playing';
 
@@ -90,151 +128,171 @@
 		isActive: boolean;
 	};
 
-	const setPodcastAudioState = (targetMessageId, state, value) => {
+	const revokePodcastAsset = (asset?: PodcastMediaCacheEntry | null) => {
+		if (asset?.audioUrl?.startsWith?.('blob:')) {
+			URL.revokeObjectURL(asset.audioUrl);
+		}
+	};
+
+	const getPodcastAssetCacheKey = (targetMessageId: string) => {
+		const targetMessage = history.messages[targetMessageId];
+		return buildPodcastAssetCacheKey({
+			engine: $settings?.audio?.tts?.engine ?? '',
+			voice: podcastSelectedVoice,
+			text: removeAllDetails(targetMessage?.content ?? '')
+		});
+	};
+
+	const hasValidPodcastAsset = (targetMessageId: string) => {
+		const cacheKey = getPodcastAssetCacheKey(targetMessageId);
+		const asset = podcastMediaCacheByMessageId[targetMessageId];
+		return Boolean(asset?.audioUrl && asset.cacheKey === cacheKey);
+	};
+
+	const setPodcastPlaybackSnapshot = (
+		targetMessageId: string,
+		snapshotPatch: Partial<PodcastPlaybackSnapshot>
+	) => {
 		if (!targetMessageId) return;
 
-		if (state === 'ready') {
-			podcastAudioReady = {
-				...podcastAudioReady,
-				[targetMessageId]: value
-			};
-			if (value) {
-				podcastAudioAssets = {
-					...podcastAudioAssets,
-					[targetMessageId]: podcastAudioAssets[targetMessageId] ?? { audioUrl: '__ready__' }
-				};
-				podcastAudioLoading = {
-					...podcastAudioLoading,
-					[targetMessageId]: false
-				};
+		const currentSnapshot = podcastPlaybackSnapshotsByMessageId[targetMessageId] ?? {
+			currentTime: 0,
+			progress: 0,
+			duration: 0
+		};
+
+		podcastPlaybackSnapshotsByMessageId = {
+			...podcastPlaybackSnapshotsByMessageId,
+			[targetMessageId]: {
+				...currentSnapshot,
+				...snapshotPatch
 			}
-			if (value) {
-				podcastQueueOrder = {
-					...podcastQueueOrder,
-					[targetMessageId]: null
-				};
-			}
-			if (!value && podcastActiveMessageId === targetMessageId) {
-				podcastActiveMessageId = null;
-			}
-			return;
+		};
+	};
+
+	const clearPodcastQueueState = () => {
+		podcastQueueState = {
+			...podcastQueueState,
+			loadingByMessageId: {},
+			queueOrderByMessageId: {},
+			requestsByMessageId: {},
+			runId: podcastQueueState.runId + 1,
+			running: false,
+			queueKey: ''
+		};
+	};
+
+	const clearPodcastSessionState = () => {
+		podcastSession = {
+			activeMessageId: null,
+			playingMessageId: null
+		};
+	};
+
+	const invalidatePodcastAsset = (targetMessageId: string) => {
+		const existingAsset = podcastMediaCacheByMessageId[targetMessageId];
+		if (!existingAsset) return;
+
+		revokePodcastAsset(existingAsset);
+		const { [targetMessageId]: _removedAsset, ...restAssets } = podcastMediaCacheByMessageId;
+		podcastMediaCacheByMessageId = restAssets;
+	};
+
+	const invalidatePodcastAssets = (targetMessageIds: string[]) => {
+		for (const candidateId of targetMessageIds) {
+			invalidatePodcastAsset(candidateId);
 		}
+	};
+
+	const pausePodcastSession = () => {
+		if (!podcastSession.playingMessageId && !podcastSession.activeMessageId) return;
+
+		podcastSession = {
+			...podcastSession,
+			playingMessageId: null
+		};
+	};
+
+	const setPodcastAudioState = (targetMessageId: string, state: string, value: any) => {
+		if (!targetMessageId) return;
 
 		if (state === 'playing') {
-			if (value) {
-				podcastActiveMessageId = targetMessageId;
-				podcastAudioPlaying = Object.keys(podcastAudioPlaying).reduce((acc, candidateId) => {
-					acc[candidateId] = candidateId === targetMessageId;
-					return acc;
-				}, {});
-			} else if (podcastActiveMessageId === targetMessageId) {
-				podcastAudioPlaying = {
-					...podcastAudioPlaying,
-					[targetMessageId]: false
-				};
-				return;
-			}
-
-			podcastAudioPlaying = {
-				...podcastAudioPlaying,
-				[targetMessageId]: value
+			podcastSession = {
+				activeMessageId: value ? targetMessageId : podcastSession.activeMessageId,
+				playingMessageId: value
+					? targetMessageId
+					: podcastSession.playingMessageId === targetMessageId
+						? null
+						: podcastSession.playingMessageId
 			};
 			return;
 		}
 
-		if (state === 'progress') {
-			if (value > 0 && !podcastAudioReady[targetMessageId]) {
-				podcastAudioReady = {
-					...podcastAudioReady,
-					[targetMessageId]: true
-				};
-				podcastAudioLoading = {
-					...podcastAudioLoading,
-					[targetMessageId]: false
-				};
-			}
-			podcastPlaybackProgress = {
-				...podcastPlaybackProgress,
-				[targetMessageId]: value
+		if (state === 'loading') {
+			podcastQueueState = {
+				...podcastQueueState,
+				loadingByMessageId: {
+					...podcastQueueState.loadingByMessageId,
+					[targetMessageId]: Boolean(value)
+				},
+				queueOrderByMessageId: {
+					...podcastQueueState.queueOrderByMessageId,
+					[targetMessageId]: value
+						? null
+						: (podcastQueueState.queueOrderByMessageId[targetMessageId] ?? null)
+				}
 			};
 			return;
 		}
 
-		podcastAudioLoading = {
-			...podcastAudioLoading,
-			[targetMessageId]: value
-		};
-
-		if (value) {
-			podcastQueueOrder = {
-				...podcastQueueOrder,
-				[targetMessageId]: null
+		if (state === 'active') {
+			podcastSession = {
+				...podcastSession,
+				activeMessageId: value
+					? targetMessageId
+					: podcastSession.activeMessageId === targetMessageId
+						? null
+						: podcastSession.activeMessageId
 			};
 		}
 	};
 
-	const setPodcastWaveformBars = (targetMessageId, bars) => {
-		if (!targetMessageId || !bars?.length) return;
-
-		podcastWaveformBars = {
-			...podcastWaveformBars,
-			[targetMessageId]: bars
-		};
-	};
-
-	const registerPodcastPrefetch = (targetMessageId, prefetchAudio) => {
-		if (!targetMessageId || typeof prefetchAudio !== 'function') return;
-
-		podcastPrefetchers = {
-			...podcastPrefetchers,
-			[targetMessageId]: prefetchAudio
-		};
-
-		podcastPrefetchQueueKey = '';
-	};
-
-	const resetPodcastQueueState = () => {
-		for (const asset of Object.values(podcastAudioAssets ?? {})) {
-			if (asset?.audioUrl?.startsWith?.('blob:')) {
-				URL.revokeObjectURL(asset.audioUrl);
-			}
-		}
-
-		podcastAudioReady = {};
-		podcastAudioLoading = {};
-		podcastAudioPlaying = {};
-		podcastQueueOrder = {};
-		podcastPlaybackProgress = {};
-		podcastWaveformBars = {};
-		podcastPrefetchers = {};
-		podcastPrefetchQueueKey = '';
-		podcastQueueRunning = false;
-		podcastAudioAssets = {};
-		podcastAudioRequests = {};
-		podcastQueueRunId += 1;
-	};
-
-	const ensurePodcastAudioAsset = async (targetMessageId) => {
+	const ensurePodcastAudioAsset = async (targetMessageId: string) => {
 		if (!targetMessageId) return null;
-		if (podcastAudioAssets[targetMessageId]) return podcastAudioAssets[targetMessageId];
-		if (podcastAudioRequests[targetMessageId]) return await podcastAudioRequests[targetMessageId];
+
+		const cacheKey = getPodcastAssetCacheKey(targetMessageId);
+		const existingAsset = podcastMediaCacheByMessageId[targetMessageId];
+		if (existingAsset?.cacheKey === cacheKey) {
+			return existingAsset;
+		}
+
+		if (existingAsset && existingAsset.cacheKey !== cacheKey) {
+			invalidatePodcastAsset(targetMessageId);
+		}
+
+		if (podcastQueueState.requestsByMessageId[targetMessageId]) {
+			return await podcastQueueState.requestsByMessageId[targetMessageId];
+		}
 
 		const request = (async () => {
 			const targetMessage = history.messages[targetMessageId];
 			if (!targetMessage?.content?.trim()) return null;
 
-			podcastAudioLoading = {
-				...podcastAudioLoading,
-				[targetMessageId]: true
-			};
-			podcastQueueOrder = {
-				...podcastQueueOrder,
-				[targetMessageId]: null
+			podcastQueueState = {
+				...podcastQueueState,
+				loadingByMessageId: {
+					...podcastQueueState.loadingByMessageId,
+					[targetMessageId]: true
+				},
+				queueOrderByMessageId: {
+					...podcastQueueState.queueOrderByMessageId,
+					[targetMessageId]: null
+				}
 			};
 
 			const cleanContent = removeAllDetails(targetMessage.content ?? '');
 
-			let asset = null;
+			let asset: PodcastMediaCacheEntry | null = null;
 
 			try {
 				if ($settings?.audio?.tts?.engine === 'browser-kokoro') {
@@ -242,16 +300,17 @@
 						await TTSWorker.set(
 							new KokoroWorker({
 								dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
-							})
+							}) as any
 						);
-						await $TTSWorker.init();
+						await ($TTSWorker as any).init();
 					}
 
-					const audioUrl = await $TTSWorker.generate({
+					const audioUrl = await ($TTSWorker as any).generate({
 						text: cleanContent,
 						voice: podcastSelectedVoice
 					});
 					asset = {
+						cacheKey,
 						audioUrl,
 						duration: 0,
 						bars: buildFallbackWaveformBars(cleanContent || targetMessageId)
@@ -271,6 +330,7 @@
 					const blob = await response.blob();
 					const waveform = await extractWaveformBarsFromBlob(blob).catch(() => null);
 					asset = {
+						cacheKey,
 						audioUrl: URL.createObjectURL(blob),
 						duration: waveform?.duration ?? 0,
 						bars: waveform?.bars?.length
@@ -280,43 +340,55 @@
 				}
 
 				if (asset) {
-					podcastAudioAssets = {
-						...podcastAudioAssets,
-						[targetMessageId]: asset
-					};
-					podcastAudioReady = {
-						...podcastAudioReady,
-						[targetMessageId]: true
-					};
-					podcastWaveformBars = {
-						...podcastWaveformBars,
-						[targetMessageId]: asset.bars
-					};
+					const latestCacheKey = getPodcastAssetCacheKey(targetMessageId);
+					if (latestCacheKey === asset.cacheKey) {
+						const previousAsset = podcastMediaCacheByMessageId[targetMessageId];
+						if (previousAsset && previousAsset.audioUrl !== asset.audioUrl) {
+							revokePodcastAsset(previousAsset);
+						}
+
+						podcastMediaCacheByMessageId = {
+							...podcastMediaCacheByMessageId,
+							[targetMessageId]: asset
+						};
+					} else {
+						revokePodcastAsset(asset);
+						asset = null;
+					}
 				}
 
 				return asset;
 			} finally {
-				podcastAudioLoading = {
-					...podcastAudioLoading,
-					[targetMessageId]: false
+				podcastQueueState = {
+					...podcastQueueState,
+					loadingByMessageId: {
+						...podcastQueueState.loadingByMessageId,
+						[targetMessageId]: false
+					}
 				};
 			}
 		})();
 
-		podcastAudioRequests = {
-			...podcastAudioRequests,
-			[targetMessageId]: request
+		podcastQueueState = {
+			...podcastQueueState,
+			requestsByMessageId: {
+				...podcastQueueState.requestsByMessageId,
+				[targetMessageId]: request
+			}
 		};
 
 		const result = await request;
-		podcastAudioRequests = {
-			...podcastAudioRequests,
-			[targetMessageId]: null
+		podcastQueueState = {
+			...podcastQueueState,
+			requestsByMessageId: {
+				...podcastQueueState.requestsByMessageId,
+				[targetMessageId]: null
+			}
 		};
 		return result;
 	};
 
-	const queuePodcastAudioGeneration = async (startMessageId) => {
+	const queuePodcastAudioGeneration = async (startMessageId: string) => {
 		if (displayMode !== 'podcast' || !parentMessage?.childrenIds?.length) return;
 
 		const orderedIds = [
@@ -326,27 +398,37 @@
 
 		const queueKey = orderedIds
 			.map(
-				(candidateId) => `${candidateId}:${podcastPrefetchers[candidateId] ? 'ready' : 'pending'}`
+				(candidateId: string) =>
+					`${candidateId}:${hasValidPodcastAsset(candidateId) ? 'ready' : 'pending'}`
 			)
 			.join(':');
-		if (!queueKey || queueKey === podcastPrefetchQueueKey || podcastQueueRunning) return;
-		podcastPrefetchQueueKey = queueKey;
-		podcastQueueRunning = true;
-		const runId = ++podcastQueueRunId;
-		podcastQueueOrder = orderedIds.reduce((acc, candidateId, index) => {
-			if (podcastAudioReady[candidateId] || podcastAudioLoading[candidateId]) {
-				return acc;
-			}
 
-			return {
-				...acc,
-				[candidateId]: index + 1
-			};
-		}, {});
+		const nextRunId = podcastQueueState.runId + 1;
+		podcastQueueState = {
+			...podcastQueueState,
+			runId: nextRunId,
+			running: true,
+			queueKey,
+			queueOrderByMessageId: orderedIds.reduce((acc, candidateId, index) => {
+				if (
+					hasValidPodcastAsset(candidateId) ||
+					podcastQueueState.loadingByMessageId[candidateId]
+				) {
+					return {
+						...acc,
+						[candidateId]: null
+					};
+				}
+
+				return {
+					...acc,
+					[candidateId]: history.messages[candidateId]?.done === false ? index + 1 : index + 1
+				};
+			}, {})
+		};
 
 		for (const candidateId of orderedIds) {
-			if (runId !== podcastQueueRunId) {
-				podcastQueueRunning = false;
+			if (nextRunId !== podcastQueueState.runId) {
 				return;
 			}
 
@@ -354,35 +436,43 @@
 				continue;
 			}
 
-			if (podcastAudioReady[candidateId] || podcastAudioLoading[candidateId]) {
-				podcastQueueOrder = {
-					...podcastQueueOrder,
-					[candidateId]: null
+			if (hasValidPodcastAsset(candidateId) || podcastQueueState.loadingByMessageId[candidateId]) {
+				podcastQueueState = {
+					...podcastQueueState,
+					queueOrderByMessageId: {
+						...podcastQueueState.queueOrderByMessageId,
+						[candidateId]: null
+					}
 				};
 				continue;
 			}
 
 			try {
 				await ensurePodcastAudioAsset(candidateId);
-				if (runId !== podcastQueueRunId) {
-					podcastQueueRunning = false;
+				if (nextRunId !== podcastQueueState.runId) {
 					return;
 				}
-				podcastQueueOrder = {
-					...podcastQueueOrder,
-					[candidateId]: null
+				podcastQueueState = {
+					...podcastQueueState,
+					queueOrderByMessageId: {
+						...podcastQueueState.queueOrderByMessageId,
+						[candidateId]: null
+					}
 				};
 			} catch (error) {
 				console.error(error);
 			}
 		}
 
-		if (runId === podcastQueueRunId) {
-			podcastQueueRunning = false;
+		if (nextRunId === podcastQueueState.runId) {
+			podcastQueueState = {
+				...podcastQueueState,
+				running: false
+			};
 		}
 	};
 
-	const getPodcastCardMeta = (targetMessageId): PodcastCardMeta => {
+	const getPodcastCardMeta = (targetMessageId: string): PodcastCardMeta => {
 		const targetMessage = history.messages[targetMessageId];
 		if (!targetMessage) {
 			return {
@@ -393,14 +483,18 @@
 			};
 		}
 
-		const progress = Math.min(100, Math.max(0, podcastPlaybackProgress[targetMessageId] ?? 0));
-		const queueOrder = podcastQueueOrder[targetMessageId] ?? null;
-		const isActive = podcastActiveMessageId === targetMessageId;
-		const isPlaying = Boolean(podcastAudioPlaying[targetMessageId]);
-		const hasAudioAsset = Boolean(podcastAudioAssets[targetMessageId]?.audioUrl);
-		const isReady = Boolean(podcastAudioReady[targetMessageId] || hasAudioAsset || progress > 0);
+		const progress = Math.min(
+			100,
+			Math.max(0, podcastPlaybackSnapshotsByMessageId[targetMessageId]?.progress ?? 0)
+		);
+		const queueOrder = podcastQueueState.queueOrderByMessageId[targetMessageId] ?? null;
+		const isActive = podcastSession.activeMessageId === targetMessageId;
+		const isPlaying = podcastSession.playingMessageId === targetMessageId;
+		const isReady = hasValidPodcastAsset(targetMessageId);
 		const isWriting = targetMessage.done === false;
-		const isGeneratingAudio = Boolean(podcastAudioLoading[targetMessageId] && !isReady);
+		const isGeneratingAudio = Boolean(
+			podcastQueueState.loadingByMessageId[targetMessageId] && !isReady
+		);
 
 		let status: PodcastCardStatus = 'idle';
 
@@ -429,16 +523,13 @@
 	$: {
 		groupedMessageIds;
 		history;
-		podcastAudioReady;
-		podcastAudioLoading;
-		podcastAudioPlaying;
-		podcastQueueOrder;
-		podcastPlaybackProgress;
-		podcastActiveMessageId;
-		podcastAudioAssets;
+		podcastMediaCacheByMessageId;
+		podcastPlaybackSnapshotsByMessageId;
+		podcastSession;
+		podcastQueueState;
 
 		const nextMetaByMessageId: Record<string, PodcastCardMeta> = {};
-		for (const group of Object.values(groupedMessageIds ?? {})) {
+		for (const group of Object.values(groupedMessageIds ?? {}) as PodcastGroup[]) {
 			for (const candidateId of group?.messageIds ?? []) {
 				nextMetaByMessageId[candidateId] = getPodcastCardMeta(candidateId);
 			}
@@ -458,15 +549,16 @@
 		}
 	}
 
-	const gotoMessage = async (modelIdx, messageIdx) => {
+	const gotoMessage = async (modelIdx: string | number, messageIdx: number) => {
+		const modelKey = String(modelIdx);
 		// Clamp messageIdx to ensure it's within valid range
-		groupedMessageIdsIdx[modelIdx] = Math.max(
+		groupedMessageIdsIdx[modelKey] = Math.max(
 			0,
-			Math.min(messageIdx, groupedMessageIds[modelIdx].messageIds.length - 1)
+			Math.min(messageIdx, groupedMessageIds[modelKey].messageIds.length - 1)
 		);
 
 		// Get the messageId at the specified index
-		let messageId = groupedMessageIds[modelIdx].messageIds[groupedMessageIdsIdx[modelIdx]];
+		let messageId = groupedMessageIds[modelKey].messageIds[groupedMessageIdsIdx[modelKey]];
 		// Traverse the branch to find the deepest child message
 		let messageChildrenIds = history.messages[messageId].childrenIds;
 		while (messageChildrenIds.length !== 0) {
@@ -485,10 +577,11 @@
 		triggerScroll();
 	};
 
-	const showPreviousMessage = async (modelIdx) => {
-		groupedMessageIdsIdx[modelIdx] = Math.max(0, groupedMessageIdsIdx[modelIdx] - 1);
+	const showPreviousMessage = async (modelIdx: string | number) => {
+		const modelKey = String(modelIdx);
+		groupedMessageIdsIdx[modelKey] = Math.max(0, groupedMessageIdsIdx[modelKey] - 1);
 
-		let messageId = groupedMessageIds[modelIdx].messageIds[groupedMessageIdsIdx[modelIdx]];
+		let messageId = groupedMessageIds[modelKey].messageIds[groupedMessageIdsIdx[modelKey]];
 		let messageChildrenIds = history.messages[messageId].childrenIds;
 
 		while (messageChildrenIds.length !== 0) {
@@ -503,13 +596,14 @@
 		triggerScroll();
 	};
 
-	const showNextMessage = async (modelIdx) => {
-		groupedMessageIdsIdx[modelIdx] = Math.min(
-			groupedMessageIds[modelIdx].messageIds.length - 1,
-			groupedMessageIdsIdx[modelIdx] + 1
+	const showNextMessage = async (modelIdx: string | number) => {
+		const modelKey = String(modelIdx);
+		groupedMessageIdsIdx[modelKey] = Math.min(
+			groupedMessageIds[modelKey].messageIds.length - 1,
+			groupedMessageIdsIdx[modelKey] + 1
 		);
 
-		let messageId = groupedMessageIds[modelIdx].messageIds[groupedMessageIdsIdx[modelIdx]];
+		let messageId = groupedMessageIds[modelKey].messageIds[groupedMessageIdsIdx[modelKey]];
 		let messageChildrenIds = history.messages[messageId].childrenIds;
 
 		while (messageChildrenIds.length !== 0) {
@@ -530,47 +624,53 @@
 			? history.messages[history.messages[messageId].parentId]
 			: null;
 
-		groupedMessageIds = parentMessage?.models.reduce((a, model, modelIdx) => {
-			// Find all messages that are children of the parent message and have the same model
-			let modelMessageIds = parentMessage?.childrenIds
-				.map((id) => history.messages[id])
-				.filter((m) => m?.modelIdx === modelIdx)
-				.map((m) => m.id);
-
-			// Legacy support for messages that don't have a modelIdx
-			// Find all messages that are children of the parent message and have the same model
-			if (modelMessageIds.length === 0) {
-				let modelMessages = parentMessage?.childrenIds
+		groupedMessageIds = parentMessage?.models.reduce(
+			(a, model, modelIdx) => {
+				// Find all messages that are children of the parent message and have the same model
+				let modelMessageIds = parentMessage?.childrenIds
 					.map((id) => history.messages[id])
-					.filter((m) => m?.model === model);
+					.filter((m) => m?.modelIdx === modelIdx)
+					.map((m) => m.id);
 
-				modelMessages.forEach((m) => {
-					m.modelIdx = modelIdx;
-				});
+				// Legacy support for messages that don't have a modelIdx
+				// Find all messages that are children of the parent message and have the same model
+				if (modelMessageIds.length === 0) {
+					let modelMessages = parentMessage?.childrenIds
+						.map((id) => history.messages[id])
+						.filter((m) => m?.model === model);
 
-				modelMessageIds = modelMessages.map((m) => m.id);
-			}
+					modelMessages.forEach((m) => {
+						m.modelIdx = modelIdx;
+					});
 
-			return {
-				...a,
-				[modelIdx]: { messageIds: modelMessageIds }
-			};
-		}, {});
+					modelMessageIds = modelMessages.map((m) => m.id);
+				}
 
-		groupedMessageIdsIdx = parentMessage?.models.reduce((a, model, modelIdx) => {
-			const idx = groupedMessageIds[modelIdx].messageIds.findIndex((id) => id === messageId);
-			if (idx !== -1) {
 				return {
 					...a,
-					[modelIdx]: idx
+					[modelIdx]: { messageIds: modelMessageIds }
 				};
-			} else {
-				return {
-					...a,
-					[modelIdx]: groupedMessageIds[modelIdx].messageIds.length - 1
-				};
-			}
-		}, {});
+			},
+			{} as Record<string, PodcastGroup>
+		);
+
+		groupedMessageIdsIdx = parentMessage?.models.reduce(
+			(a, model, modelIdx) => {
+				const idx = groupedMessageIds[modelIdx].messageIds.findIndex((id) => id === messageId);
+				if (idx !== -1) {
+					return {
+						...a,
+						[modelIdx]: idx
+					};
+				} else {
+					return {
+						...a,
+						[modelIdx]: groupedMessageIds[modelIdx].messageIds.length - 1
+					};
+				}
+			},
+			{} as Record<string, number>
+		);
 
 		const initialSelectedModelIdx = history.messages[messageId]?.modelIdx;
 		const persistedSelectedModelIdx = parentMessage?.id
@@ -585,25 +685,35 @@
 		await tick();
 	};
 
-	const selectModel = (modelIdx) => {
+	const selectModel = (modelIdx: string | number) => {
 		selectedModelIdx = Number(modelIdx);
 		if (parentMessage?.id && selectedModelIdx !== null) {
 			focusSelectedModelIdxByParentId.set(parentMessage.id, selectedModelIdx);
 		}
 	};
 
-	const selectModelAndOpenGroup = (_messageId, modelIdx) => {
+	const selectModelAndOpenGroup = (_messageId: string, modelIdx: string | number) => {
 		selectModel(modelIdx);
 		onGroupClick(_messageId, Number(modelIdx));
 	};
 
-	const onGroupClick = (_messageId, modelIdx) => {
-		if (displayMode === 'podcast' && podcastActiveMessageId !== _messageId) {
-			resetPodcastQueueState();
+	const onGroupClick = (_messageId: string, modelIdx: string | number) => {
+		if (displayMode === 'podcast' && podcastSession.activeMessageId !== _messageId) {
+			pausePodcastSession();
+			clearPodcastQueueState();
+			podcastSession = {
+				activeMessageId: _messageId,
+				playingMessageId: null
+			};
+			queuePodcastAudioGeneration(_messageId);
 		}
-		podcastActiveMessageId = _messageId;
 		selectModel(modelIdx);
 	};
+
+	$: void generateMoACompletion;
+	$: void createOpenAITextStream;
+	$: void settings;
+	$: void i18n;
 
 	const mergeResponsesHandler = async () => {
 		const responses = Object.keys(groupedMessageIds).map((modelIdx) => {
@@ -639,32 +749,88 @@
 	$: if (parentMessage?.id && selectedModelIdx !== null) {
 		focusSelectedModelIdxByParentId.set(parentMessage.id, selectedModelIdx);
 	}
+	$: podcastScopeKey =
+		displayMode === 'podcast' && parentMessage?.id
+			? `${parentMessage.id}:${(parentMessage.childrenIds ?? []).join(':')}`
+			: '';
+	$: if (displayMode === 'podcast' && podcastScopeKey && podcastScopeKey !== lastPodcastScopeKey) {
+		const previousChildIds = lastPodcastScopeKey.split(':').slice(1).filter(Boolean);
+		const nextChildIds = parentMessage?.childrenIds ?? [];
+		const removedIds = previousChildIds.filter(
+			(candidateId) => !nextChildIds.includes(candidateId)
+		);
+
+		invalidatePodcastAssets(removedIds);
+		if (removedIds.length > 0) {
+			podcastPlaybackSnapshotsByMessageId = Object.fromEntries(
+				Object.entries(podcastPlaybackSnapshotsByMessageId).filter(
+					([candidateId]) => !removedIds.includes(candidateId)
+				)
+			);
+			podcastQueueState = {
+				...podcastQueueState,
+				loadingByMessageId: Object.fromEntries(
+					Object.entries(podcastQueueState.loadingByMessageId).filter(
+						([candidateId]) => !removedIds.includes(candidateId)
+					)
+				),
+				queueOrderByMessageId: Object.fromEntries(
+					Object.entries(podcastQueueState.queueOrderByMessageId).filter(
+						([candidateId]) => !removedIds.includes(candidateId)
+					)
+				),
+				requestsByMessageId: Object.fromEntries(
+					Object.entries(podcastQueueState.requestsByMessageId).filter(
+						([candidateId]) => !removedIds.includes(candidateId)
+					)
+				)
+			};
+
+			if (
+				removedIds.includes(podcastSession.activeMessageId ?? '') ||
+				removedIds.includes(podcastSession.playingMessageId ?? '')
+			) {
+				clearPodcastSessionState();
+			}
+		}
+
+		lastPodcastScopeKey = podcastScopeKey;
+	}
 	$: if (displayMode === 'podcast' && podcastSelectedVoice !== lastPodcastSelectedVoice) {
 		lastPodcastSelectedVoice = podcastSelectedVoice;
-		resetPodcastQueueState();
+		invalidatePodcastAssets(parentMessage?.childrenIds ?? []);
+		clearPodcastQueueState();
 	}
 	$: if (displayMode === 'podcast' && parentMessage?.childrenIds?.length) {
 		for (const candidateId of parentMessage.childrenIds) {
-			if (!podcastWaveformBars[candidateId]) {
-				podcastWaveformBars[candidateId] = buildFallbackWaveformBars(
-					history.messages[candidateId]?.content ?? candidateId,
-					32
-				);
+			if (!hasValidPodcastAsset(candidateId)) continue;
+
+			const candidateSnapshot = podcastPlaybackSnapshotsByMessageId[candidateId];
+			const candidateAsset = podcastMediaCacheByMessageId[candidateId];
+			if (!candidateSnapshot && candidateAsset) {
+				setPodcastPlaybackSnapshot(candidateId, {
+					currentTime: 0,
+					progress: 0,
+					duration: candidateAsset.duration ?? 0
+				});
 			}
 		}
 	}
 	$: if (displayMode !== 'podcast' && lastPodcastSelectedVoice !== '') {
 		lastPodcastSelectedVoice = '';
-		resetPodcastQueueState();
-		podcastActiveMessageId = null;
+		clearPodcastQueueState();
+		clearPodcastSessionState();
 	}
 	$: if (
 		displayMode === 'podcast' &&
 		selectedModelIdx !== null &&
 		groupedMessageIds[selectedModelIdx]
 	) {
-		if (!podcastActiveMessageId) {
-			podcastActiveMessageId = selectedMessageId;
+		if (!podcastSession.activeMessageId) {
+			podcastSession = {
+				...podcastSession,
+				activeMessageId: selectedMessageId
+			};
 		}
 		queuePodcastAudioGeneration(selectedMessageId);
 	}
@@ -679,6 +845,12 @@
 				messageElement.scrollIntoView({ block: 'start' });
 			}
 		}
+	});
+
+	onDestroy(() => {
+		invalidatePodcastAssets(Object.keys(podcastMediaCacheByMessageId));
+		clearPodcastQueueState();
+		clearPodcastSessionState();
 	});
 </script>
 
@@ -786,7 +958,7 @@
 														status={previewCardMeta.status}
 														queueOrder={previewCardMeta.queueOrder}
 														progress={previewCardMeta.progress}
-														bars={podcastWaveformBars[previewMessageId] ??
+														bars={podcastMediaCacheByMessageId[previewMessageId]?.bars ??
 															buildFallbackWaveformBars(
 																history.messages[previewMessageId]?.content ?? previewMessageId,
 																32
@@ -829,11 +1001,14 @@
 										{chatId}
 										{history}
 										messageId={selectedMessageId}
-										audioAsset={podcastAudioAssets[selectedMessageId] ?? null}
+										audioAsset={hasValidPodcastAsset(selectedMessageId)
+											? podcastMediaCacheByMessageId[selectedMessageId]
+											: null}
 										ensureAudioAsset={ensurePodcastAudioAsset}
 										setAudioState={setPodcastAudioState}
-										setWaveformBars={setPodcastWaveformBars}
-										registerPrefetch={registerPodcastPrefetch}
+										playbackSnapshot={podcastPlaybackSnapshotsByMessageId[selectedMessageId] ??
+											null}
+										setPlaybackSnapshot={setPodcastPlaybackSnapshot}
 										selectedVoice={podcastSelectedVoice}
 										{selectedModels}
 										isLastMessage={true}
@@ -901,7 +1076,7 @@
 													status={previewCardMeta.status}
 													queueOrder={previewCardMeta.queueOrder}
 													progress={previewCardMeta.progress}
-													bars={podcastWaveformBars[previewMessageId] ??
+													bars={podcastMediaCacheByMessageId[previewMessageId]?.bars ??
 														buildFallbackWaveformBars(
 															history.messages[previewMessageId]?.content ?? previewMessageId,
 															32

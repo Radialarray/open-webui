@@ -1,5 +1,11 @@
 import { getMessageContentParts } from '$lib/utils';
 
+type BuildPodcastAssetCacheKeyParams = {
+	engine?: string;
+	voice?: string;
+	text?: string;
+};
+
 export type PodcastSegment = {
 	text: string;
 	index: number;
@@ -29,10 +35,7 @@ export const buildPodcastSegments = (content: string, splitOn: string = 'punctua
 	});
 };
 
-export const scalePodcastSegmentsToDuration = (
-	segments: PodcastSegment[],
-	duration: number
-) => {
+export const scalePodcastSegmentsToDuration = (segments: PodcastSegment[], duration: number) => {
 	if (!segments.length || !Number.isFinite(duration) || duration <= 0) {
 		return segments;
 	}
@@ -95,4 +98,16 @@ export const extractWaveformBarsFromBlob = async (blob: Blob, samples: number = 
 	} finally {
 		await audioContext.close().catch(() => {});
 	}
+};
+
+export const buildPodcastAssetCacheKey = ({
+	engine = '',
+	voice = '',
+	text = ''
+}: BuildPodcastAssetCacheKeyParams) => {
+	return JSON.stringify({
+		engine,
+		voice,
+		text
+	});
 };

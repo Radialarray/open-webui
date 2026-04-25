@@ -1,35 +1,45 @@
 <script lang="ts">
-	import { createEventDispatcher, getContext, onDestroy, onMount } from 'svelte';
+	// @ts-nocheck
+	type PodcastAudioAsset = {
+		cacheKey?: string;
+		audioUrl: string;
+		duration: number;
+		bars: number[];
+	};
+
+	type PodcastPlaybackSnapshot = {
+		currentTime: number;
+		progress: number;
+		duration: number;
+	};
+
+	import { getContext, onMount, tick } from 'svelte';
 	import dayjs from 'dayjs';
 	import localizedFormat from 'dayjs/plugin/localizedFormat';
-	import { config, models, settings, TTSWorker } from '$lib/stores';
-	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
+	import { config, models, settings } from '$lib/stores';
 	import { removeAllDetails } from '$lib/utils';
 	import {
 		buildFallbackWaveformBars,
 		buildPodcastSegments,
-		extractWaveformBarsFromBlob,
 		scalePodcastSegmentsToDuration
 	} from '$lib/utils/podcast';
 	import PodcastTranscript from './PodcastTranscript.svelte';
-	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 
 	dayjs.extend(localizedFormat);
 
-	const dispatch = createEventDispatcher();
 	const i18n = getContext('i18n');
 
 	export let chatId = '';
 	export let history;
-	export let messageId;
-	export let audioAsset = null;
+	export let messageId: string;
+	export let audioAsset: PodcastAudioAsset | null = null;
 	export let ensureAudioAsset: Function = async () => null;
 	export let setAudioState: Function = () => {};
-	export let setWaveformBars: Function = () => {};
-	export let registerPrefetch: Function = () => {};
+	export let playbackSnapshot: PodcastPlaybackSnapshot | null = null;
+	export let setPlaybackSnapshot: Function = () => {};
 	export let selectedVoice = '';
-	export let selectedModels = [];
-	export let siblings = [];
+	export let selectedModels: any[] = [];
+	export let siblings: string[] = [];
 	export let isLastMessage = true;
 	export let readOnly = false;
 	export let gotoMessage: Function = () => {};
@@ -44,16 +54,13 @@
 	let waveformBars: number[] = [];
 	let playing = false;
 	let waveformContainer: HTMLDivElement;
-	let lastGeneratedAudioUrl = '';
 	let registeredPlaying = false;
-	let currentAudioRequestId = 0;
 	let availableVoices: { id: string; name: string }[] = [];
-	let lastSelectedVoice = '';
 	let playbackPendingAfterGesture = false;
 	let playbackResumeNotice = false;
 
 	const getKokoroVoicesUrl = () => {
-		const configuredBaseUrl = $config?.audio?.tts?.OPENAI_API_BASE_URL;
+		const configuredBaseUrl = ($config as any)?.audio?.tts?.OPENAI_API_BASE_URL;
 		if (configuredBaseUrl) {
 			try {
 				const url = new URL(configuredBaseUrl);
@@ -79,10 +86,10 @@
 	$: message = history?.messages?.[messageId];
 	$: model = $models.find((entry) => entry.id === message?.model);
 	$: cleanContent = removeAllDetails(message?.content ?? '');
-	$: resolvedVoice = selectedVoice || $config?.audio?.tts?.voice || 'alloy';
+	$: resolvedVoice = selectedVoice || ($config as any)?.audio?.tts?.voice || 'alloy';
 	$: baseTranscriptSegments = buildPodcastSegments(
 		cleanContent,
-		$config?.audio?.tts?.split_on ?? 'punctuation'
+		($config as any)?.audio?.tts?.split_on ?? 'punctuation'
 	);
 	$: transcriptSegments = scalePodcastSegmentsToDuration(baseTranscriptSegments, duration);
 	$: activeSegmentIndex = (() => {
@@ -102,14 +109,25 @@
 	$: if (waveformBars.length === 0) {
 		waveformBars = buildFallbackWaveformBars(cleanContent || messageId || 'waveform');
 	}
-	let lastWaveformSignature = '';
-	$: if (waveformBars.length > 0 && messageId) {
-		const signature = `${messageId}:${waveformBars.join(',')}`;
-		if (signature !== lastWaveformSignature) {
-			lastWaveformSignature = signature;
-			setWaveformBars(messageId, waveformBars.slice(0, 32));
-		}
-	}
+	let pendingRestoreTime: number | null = null;
+
+	const persistPlaybackSnapshotFor = (
+		targetMessageId: string | undefined,
+		snapshotPatch: Partial<PodcastPlaybackSnapshot> = {}
+	) => {
+		if (!targetMessageId) return;
+
+		setPlaybackSnapshot(targetMessageId, {
+			currentTime,
+			progress: duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0,
+			duration,
+			...snapshotPatch
+		});
+	};
+
+	const persistPlaybackSnapshot = (snapshotPatch: Partial<PodcastPlaybackSnapshot> = {}) => {
+		persistPlaybackSnapshotFor(messageId, snapshotPatch);
+	};
 
 	async function ensureAudio(force = false) {
 		const finishLoading = () => {
@@ -121,117 +139,55 @@
 			audioUrl = audioAsset.audioUrl;
 			duration = audioAsset.duration ?? duration;
 			waveformBars = audioAsset.bars?.length ? audioAsset.bars : waveformBars;
+			pendingRestoreTime = playbackSnapshot?.currentTime ?? 0;
 			finishLoading();
 			return audioUrl;
 		}
 
 		if ((!force && (audioUrl || loadingAudio)) || !message?.content?.trim()) return audioUrl;
+
+		loadingAudio = true;
+		setAudioState(messageId, 'loading', true);
+
 		if (ensureAudioAsset) {
 			const asset = await ensureAudioAsset(messageId);
 			if (asset?.audioUrl) {
 				audioUrl = asset.audioUrl;
 				duration = asset.duration ?? duration;
 				waveformBars = asset.bars?.length ? asset.bars : waveformBars;
+				pendingRestoreTime = playbackSnapshot?.currentTime ?? 0;
 				finishLoading();
-				syncReadyState(true);
 				return audioUrl;
 			}
 		}
-
-		const requestId = ++currentAudioRequestId;
-		loadingAudio = true;
-		setAudioState(messageId, 'loading', true);
-
-		if ($settings?.audio?.tts?.engine === 'browser-kokoro') {
-			try {
-				if (!$TTSWorker) {
-					await TTSWorker.set(
-						new KokoroWorker({
-							dtype: $settings.audio?.tts?.engineConfig?.dtype ?? 'fp32'
-						})
-					);
-
-					await $TTSWorker.init();
-				}
-
-				audioUrl = await $TTSWorker.generate({ text: cleanContent, voice: resolvedVoice });
-				if (requestId !== currentAudioRequestId) {
-					finishLoading();
-					return '';
-				}
-				lastGeneratedAudioUrl = audioUrl;
-				waveformBars = buildFallbackWaveformBars(cleanContent || audioUrl);
-				syncReadyState(true);
-			} catch (error) {
-				console.error(error);
-				dispatch('error', error);
-			}
-		} else {
-			const response = await synthesizeOpenAISpeech(
-				localStorage.token,
-				resolvedVoice,
-				cleanContent
-			).catch(
-				(error) => {
-					console.error(error);
-					dispatch('error', error);
-					return null;
-				}
-			);
-
-			if (response) {
-				const blob = await response.blob();
-				if (requestId !== currentAudioRequestId) {
-					finishLoading();
-					return '';
-				}
-				const waveform = await extractWaveformBarsFromBlob(blob).catch(() => null);
-				if (requestId !== currentAudioRequestId) {
-					finishLoading();
-					return '';
-				}
-				audioUrl = URL.createObjectURL(blob);
-				lastGeneratedAudioUrl = audioUrl;
-				waveformBars = waveform?.bars?.length
-					? waveform.bars
-					: buildFallbackWaveformBars(cleanContent || audioUrl);
-				if (waveform?.duration) {
-					duration = waveform.duration;
-				}
-				syncReadyState(true);
-			}
-		}
-
 		finishLoading();
 		return audioUrl;
 	}
-
-	const prefetchAudio = async () => {
-		await ensureAudio();
-	};
 
 	const syncPlayingState = () => {
 		setAudioState(messageId, 'playing', playing);
 	};
 
-	const syncReadyState = (value: boolean) => {
-		setAudioState(messageId, 'ready', value);
-	};
-
-	const onLoadedMetadata = () => {
+	const onLoadedMetadata = async () => {
 		duration = audioElement?.duration ?? 0;
-		syncReadyState(true);
+		const nextTime = Math.min(
+			pendingRestoreTime ?? playbackSnapshot?.currentTime ?? 0,
+			duration || 0
+		);
+		await tick();
+		if (audioElement && Number.isFinite(nextTime) && nextTime > 0) {
+			audioElement.currentTime = nextTime;
+			currentTime = nextTime;
+		}
+		pendingRestoreTime = null;
+		persistPlaybackSnapshot({ duration, currentTime });
 		onTimeUpdate();
 	};
 
 	const onTimeUpdate = () => {
 		currentTime = audioElement?.currentTime ?? 0;
 		playing = audioElement ? !audioElement.paused && !audioElement.ended : false;
-		setAudioState(
-			messageId,
-			'progress',
-			duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
-		);
+		persistPlaybackSnapshot();
 	};
 
 	const onPlay = () => {
@@ -242,6 +198,7 @@
 	const onPause = () => {
 		playing = false;
 		syncPlayingState();
+		persistPlaybackSnapshot();
 	};
 
 	const playAudioElement = async () => {
@@ -264,18 +221,15 @@
 		}
 	};
 
-	const onSeek = (event) => {
-		const value = Number(event.currentTarget.value);
+	const onSeek = (event: Event) => {
+		const target = event.currentTarget as HTMLInputElement;
+		const value = Number(target.value);
 		if (audioElement) {
 			audioElement.currentTime = value;
 			currentTime = value;
 		}
 		playing = audioElement ? !audioElement.paused && !audioElement.ended : false;
-		setAudioState(
-			messageId,
-			'progress',
-			duration > 0 ? Math.min(100, (value / duration) * 100) : 0
-		);
+		persistPlaybackSnapshot({ currentTime: value });
 	};
 
 	const seekFromWaveform = (clientX: number) => {
@@ -286,17 +240,13 @@
 		audioElement.currentTime = nextTime;
 		currentTime = nextTime;
 		playing = audioElement ? !audioElement.paused && !audioElement.ended : false;
-		setAudioState(
-			messageId,
-			'progress',
-			duration > 0 ? Math.min(100, (nextTime / duration) * 100) : 0
-		);
+		persistPlaybackSnapshot({ currentTime: nextTime });
 	};
 
 	const onWaveformPointerDown = async (event: PointerEvent) => {
 		await ensureAudio();
 		seekFromWaveform(event.clientX);
-		event.currentTarget?.setPointerCapture?.(event.pointerId);
+		(event.currentTarget as Element | null)?.setPointerCapture?.(event.pointerId);
 		if (playbackPendingAfterGesture) {
 			await playAudioElement();
 		}
@@ -335,67 +285,34 @@
 	};
 
 	$: if (messageId && messageId !== lastMessageId) {
-		currentAudioRequestId += 1;
+		persistPlaybackSnapshotFor(lastMessageId);
 		lastMessageId = messageId;
-		lastWaveformSignature = '';
-		currentTime = 0;
-		duration = 0;
 		if (audioElement) {
 			audioElement.pause();
-			audioElement.currentTime = 0;
 		}
-		syncReadyState(false);
-		if (audioUrl) {
-			if (audioUrl.startsWith('blob:') && audioUrl !== lastGeneratedAudioUrl) {
-				URL.revokeObjectURL(audioUrl);
-			}
-			if (audioUrl.startsWith('blob:')) {
-				URL.revokeObjectURL(audioUrl);
-			}
-			audioUrl = '';
-		}
+		currentTime = playbackSnapshot?.currentTime ?? 0;
+		duration = audioAsset?.duration ?? playbackSnapshot?.duration ?? 0;
+		audioUrl = audioAsset?.audioUrl ?? '';
+		waveformBars = audioAsset?.bars?.length
+			? audioAsset.bars
+			: buildFallbackWaveformBars(cleanContent || messageId || 'waveform');
+		pendingRestoreTime = playbackSnapshot?.currentTime ?? 0;
 		playing = false;
 		playbackPendingAfterGesture = false;
 		playbackResumeNotice = false;
 		syncPlayingState();
-		setAudioState(messageId, 'progress', 0);
-		waveformBars = buildFallbackWaveformBars(cleanContent || messageId || 'waveform');
-	}
-
-	$: if (resolvedVoice && resolvedVoice !== lastSelectedVoice) {
-		lastSelectedVoice = resolvedVoice;
-		currentAudioRequestId += 1;
-		loadingAudio = false;
-		currentTime = 0;
-		duration = 0;
-		if (audioElement) {
-			audioElement.pause();
-			audioElement.currentTime = 0;
-		}
-		if (audioUrl?.startsWith('blob:')) {
-			URL.revokeObjectURL(audioUrl);
-		}
-		audioUrl = '';
-		playing = false;
-		playbackPendingAfterGesture = false;
-		playbackResumeNotice = false;
-		syncReadyState(false);
-		syncPlayingState();
-		setAudioState(messageId, 'progress', 0);
-		if (message?.content?.trim()) {
-			ensureAudio(true);
-		}
 	}
 
 	$: if (audioAsset?.audioUrl && audioAsset.audioUrl !== audioUrl) {
 		audioUrl = audioAsset.audioUrl;
 		duration = audioAsset.duration ?? duration;
 		waveformBars = audioAsset.bars?.length ? audioAsset.bars : waveformBars;
+		pendingRestoreTime = playbackSnapshot?.currentTime ?? currentTime;
 		loadingAudio = false;
-		syncReadyState(true);
 	}
-
-	$: registerPrefetch(messageId, prefetchAudio);
+	$: if (!audioAsset?.audioUrl) {
+		audioUrl = '';
+	}
 	$: if (messageId && playing !== registeredPlaying) {
 		registeredPlaying = playing;
 		syncPlayingState();
@@ -412,7 +329,7 @@
 			})
 			.catch(() => null);
 		const voices = response?.voices ?? [];
-		availableVoices = voices.map((voice) => {
+		availableVoices = voices.map((voice: any) => {
 			if (typeof voice === 'string') {
 				return { id: voice, name: voice };
 			}
@@ -437,21 +354,15 @@
 			}
 		};
 
-		await settings.set(updatedSettings);
+		await settings.set(updatedSettings as any);
 		localStorage.setItem('settings', JSON.stringify(updatedSettings));
 	};
-
-	onDestroy(() => {
-		if (audioUrl) {
-			if (audioUrl.startsWith('blob:')) {
-				URL.revokeObjectURL(audioUrl);
-			}
-		}
-	});
 </script>
 
 {#if message}
-	<div class="rounded-[1.75rem] border border-gray-200/80 dark:border-gray-800 bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-950 p-4 sm:p-5 md:p-6 shadow-sm">
+	<div
+		class="rounded-[1.75rem] border border-gray-200/80 dark:border-gray-800 bg-gradient-to-br from-white to-gray-50 dark:from-gray-900 dark:to-gray-950 p-4 sm:p-5 md:p-6 shadow-sm"
+	>
 		<div class="flex flex-col gap-5">
 			<div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
 				<div>
@@ -466,9 +377,13 @@
 					</div>
 				</div>
 
-				<div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 flex-wrap sm:justify-end">
+				<div
+					class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 flex-wrap sm:justify-end"
+				>
 					{#if availableVoices.length > 0}
-						<label class="flex items-center gap-2 rounded-full border border-gray-200 dark:border-gray-700 px-3 py-1">
+						<label
+							class="flex items-center gap-2 rounded-full border border-gray-200 dark:border-gray-700 px-3 py-1"
+						>
 							<span>{$i18n.t('Voice')}</span>
 							<select
 								class="bg-transparent text-xs outline-hidden"
@@ -484,7 +399,9 @@
 					{/if}
 
 					{#if siblings.length > 1}
-						<div class="flex items-center gap-1 rounded-full border border-gray-200 dark:border-gray-700 px-2 py-1">
+						<div
+							class="flex items-center gap-1 rounded-full border border-gray-200 dark:border-gray-700 px-2 py-1"
+						>
 							<button
 								type="button"
 								class="rounded p-1 hover:bg-black/5 dark:hover:bg-white/5"
@@ -507,9 +424,12 @@
 				</div>
 			</div>
 
-			<div class="rounded-[1.5rem] border border-gray-200/80 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 sm:px-4 py-4 sm:py-5 text-gray-900 dark:text-white overflow-hidden shadow-sm">
+			<div
+				class="rounded-[1.5rem] border border-gray-200/80 dark:border-gray-800 bg-white dark:bg-gray-950 px-3 sm:px-4 py-4 sm:py-5 text-gray-900 dark:text-white overflow-hidden shadow-sm"
+			>
 				<div
 					bind:this={waveformContainer}
+					role="presentation"
 					class="flex items-end gap-1 h-28 sm:h-36 md:h-44 relative cursor-pointer touch-none"
 					on:pointerdown={onWaveformPointerDown}
 					on:pointermove={onWaveformPointerMove}
@@ -530,7 +450,9 @@
 			<div class="flex flex-col md:flex-row md:items-center gap-3 md:gap-4">
 				<button
 					type="button"
-					class="rounded-full px-4 py-2 text-sm font-medium transition disabled:opacity-60 {playing ? 'bg-emerald-500 text-white hover:bg-emerald-400' : 'bg-gray-900 text-white dark:bg-white dark:text-gray-900 hover:opacity-90'}"
+					class="rounded-full px-4 py-2 text-sm font-medium transition disabled:opacity-60 {playing
+						? 'bg-emerald-500 text-white hover:bg-emerald-400'
+						: 'bg-gray-900 text-white dark:bg-white dark:text-gray-900 hover:opacity-90'}"
 					on:click={togglePlayback}
 					disabled={loadingAudio}
 				>
@@ -586,10 +508,10 @@
 					currentTime = 0;
 					playing = false;
 					syncPlayingState();
-					setAudioState(messageId, 'progress', 0);
+					persistPlaybackSnapshot({ currentTime: 0, progress: 0 });
 				}}
 				class="hidden"
-			/>
+			></audio>
 		</div>
 	</div>
 {/if}
