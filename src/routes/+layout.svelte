@@ -109,10 +109,36 @@
 	let syncStatsEventData = null;
 
 	let heartbeatInterval = null;
+	let socketInstance = null;
+	let reconnectToastShown = false;
+	let unsubscribeUser = null;
 
 	const BREAKPOINT = 768;
 
+	const clearHeartbeatInterval = () => {
+		if (heartbeatInterval) {
+			clearInterval(heartbeatInterval);
+			heartbeatInterval = null;
+		}
+	};
+
+	const cleanupSocket = () => {
+		clearHeartbeatInterval();
+
+		if (socketInstance) {
+			socketInstance.removeAllListeners();
+			socketInstance.disconnect();
+			socketInstance = null;
+		}
+
+		reconnectToastShown = false;
+		socketConnected.set(false);
+		socket.set(null);
+	};
+
 	const setupSocket = async (enableWebsocket) => {
+		cleanupSocket();
+
 		const _socket = io(`${WEBUI_BASE_URL}` || undefined, {
 			reconnection: true,
 			reconnectionDelay: 1000,
@@ -122,22 +148,21 @@
 			transports: enableWebsocket ? ['websocket'] : ['polling', 'websocket'],
 			auth: { token: localStorage.token }
 		});
+		socketInstance = _socket;
 		await socket.set(_socket);
 
 		_socket.on('connect_error', (err) => {
 			console.log('connect_error', err);
 		});
 
-		let hasConnectedOnce = false;
-
 		_socket.on('connect', async () => {
 			console.log('connected', _socket.id);
+			socketConnected.set(true);
 
-			if (hasConnectedOnce) {
-				socketConnected.set(true);
+			if (reconnectToastShown) {
 				toast.success($i18n.t('Reconnected'));
+				reconnectToastShown = false;
 			}
-			hasConnectedOnce = true;
 
 			const res = await getVersion(localStorage.token);
 
@@ -156,6 +181,7 @@
 			}
 
 			// Send heartbeat every 30 seconds
+			clearHeartbeatInterval();
 			heartbeatInterval = setInterval(() => {
 				if (_socket.connected) {
 					console.log('Sending heartbeat');
@@ -193,11 +219,11 @@
 		_socket.on('disconnect', (reason, details) => {
 			console.log(`Socket ${_socket.id} disconnected due to ${reason}`);
 			socketConnected.set(false);
-			toast.warning($i18n.t('Connection lost. Reconnecting...'));
+			clearHeartbeatInterval();
 
-			if (heartbeatInterval) {
-				clearInterval(heartbeatInterval);
-				heartbeatInterval = null;
+			if (_socket.active && !reconnectToastShown) {
+				reconnectToastShown = true;
+				toast.warning($i18n.t('Connection lost. Reconnecting...'));
 			}
 
 			if (details) {
@@ -954,7 +980,7 @@
 		};
 		window.addEventListener('resize', onResize);
 
-		user.subscribe(async (value) => {
+		unsubscribeUser = user.subscribe(async (value) => {
 			if (value) {
 				$socket?.off('events', chatEventHandler);
 				$socket?.off('events:channel', channelEventHandler);
@@ -1117,10 +1143,20 @@
 			document.removeEventListener('touchmove', touchmoveHandler);
 			document.removeEventListener('touchend', touchendHandler);
 			document.removeEventListener('visibilitychange', handleVisibilityChange);
+			unsubscribeUser?.();
+			unsubscribeUser = null;
 		};
 	});
 
 	onDestroy(() => {
+		clearHeartbeatInterval();
+		if (tokenTimer) {
+			clearInterval(tokenTimer);
+			tokenTimer = null;
+		}
+		unsubscribeUser?.();
+		unsubscribeUser = null;
+		cleanupSocket();
 		bc.close();
 	});
 </script>
