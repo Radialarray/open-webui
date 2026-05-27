@@ -1752,13 +1752,54 @@ async def chat_completion(
         parent_id = form_data.pop('parent_id', None)
         form_data.pop('new_chat', None)  # Legacy field
 
-        # Multi-model: {model_id: assistant_message_id}
+        # Multi-model legacy: {model_id: assistant_message_id}
+        # Multi-model current: [{model, modelIdx, messageId}]
         # Single-model fallback: built from 'model' + 'id'
-        message_ids = form_data.pop('message_ids', None)
-        if not message_ids:
-            message_ids = {model_id: form_data.pop('id', None)}
+        raw_message_ids = form_data.pop('message_ids', None)
+        if not raw_message_ids:
+            message_targets = [
+                {
+                    'model': model_id,
+                    'modelIdx': 0,
+                    'messageId': form_data.pop('id', None),
+                }
+            ]
         else:
             form_data.pop('id', None)
+
+            if isinstance(raw_message_ids, list):
+                message_targets = []
+                for idx, target in enumerate(raw_message_ids):
+                    if not isinstance(target, dict):
+                        continue
+
+                    target_model_id = target.get('model')
+                    assistant_message_id = target.get('messageId') or target.get('id')
+                    target_model_idx = target.get('modelIdx', idx)
+
+                    if target_model_id:
+                        message_targets.append(
+                            {
+                                'model': target_model_id,
+                                'modelIdx': target_model_idx,
+                                'messageId': assistant_message_id,
+                            }
+                        )
+            elif isinstance(raw_message_ids, dict):
+                message_targets = [
+                    {
+                        'model': target_model_id,
+                        'modelIdx': idx,
+                        'messageId': assistant_message_id,
+                    }
+                    for idx, (target_model_id, assistant_message_id) in enumerate(raw_message_ids.items())
+                    if target_model_id
+                ]
+            else:
+                message_targets = []
+
+        if not message_targets:
+            raise ValueError('No message targets provided')
 
         user_message = form_data.pop('user_message', None) or form_data.pop('parent_message', None)
         metadata = {
@@ -1805,13 +1846,18 @@ async def chat_completion(
                     user_message_id = user_message.get('id') if user_message else None
 
                     history_messages = {}
-                    all_assistant_ids = [assistant_id for assistant_id in message_ids.values() if assistant_id]
+                    all_assistant_ids = [
+                        target.get('messageId') for target in message_targets if target.get('messageId')
+                    ]
 
                     if user_message_id and user_message:
                         user_message['childrenIds'] = all_assistant_ids
                         history_messages[user_message_id] = user_message
 
-                    for model_idx, (target_model_id, assistant_message_id) in enumerate(message_ids.items()):
+                    for target in message_targets:
+                        target_model_id = target.get('model')
+                        assistant_message_id = target.get('messageId')
+                        target_model_idx = target.get('modelIdx', 0)
                         if assistant_message_id:
                             history_messages[assistant_message_id] = {
                                 'id': assistant_message_id,
@@ -1821,7 +1867,7 @@ async def chat_completion(
                                 'content': '',
                                 'done': False,
                                 'model': target_model_id,
-                                'modelIdx': model_idx,
+                                'modelIdx': target_model_idx,
                                 'timestamp': int(time.time()),
                             }
 
@@ -1832,7 +1878,7 @@ async def chat_completion(
                             chat={
                                 'id': chat_id,
                                 'title': 'New Chat',
-                                'models': list(message_ids.keys()),
+                                'models': [target.get('model') for target in message_targets],
                                 'history': {
                                     'currentId': all_assistant_ids[0] if all_assistant_ids else user_message_id,
                                     'messages': history_messages,
@@ -1926,7 +1972,9 @@ async def chat_completion(
 
                     # Save ALL assistant placeholders
                     user_message_id = metadata.get('user_message_id')
-                    all_assistant_ids = [assistant_id for assistant_id in message_ids.values() if assistant_id]
+                    all_assistant_ids = [
+                        target.get('messageId') for target in message_targets if target.get('messageId')
+                    ]
 
                     # Link user message → all assistant messages (childrenIds)
                     if user_message_id and all_assistant_ids:
@@ -1943,7 +1991,10 @@ async def chat_completion(
                             )
 
                     # Save each assistant placeholder
-                    for model_idx, (target_model_id, assistant_message_id) in enumerate(message_ids.items()):
+                    for target in message_targets:
+                        target_model_id = target.get('model')
+                        assistant_message_id = target.get('messageId')
+                        target_model_idx = target.get('modelIdx', 0)
                         if assistant_message_id:
                             await Chats.upsert_message_to_chat_by_id_and_message_id(
                                 chat_id,
@@ -1956,7 +2007,7 @@ async def chat_completion(
                                     'content': '',
                                     'done': False,
                                     'model': target_model_id,
-                                    'modelIdx': model_idx,
+                                    'modelIdx': target_model_idx,
                                     'timestamp': int(time.time()),
                                 },
                             )
@@ -2094,7 +2145,9 @@ async def chat_completion(
         task_ids = []
         chat_id = metadata['chat_id']
 
-        for idx, (target_model_id, assistant_message_id) in enumerate(message_ids.items()):
+        for idx, target in enumerate(message_targets):
+            target_model_id = target.get('model')
+            assistant_message_id = target.get('messageId')
             if not assistant_message_id:
                 continue
 
@@ -2141,7 +2194,7 @@ async def chat_completion(
         # Emit chat:active=true
         if task_ids:
             event_emitter = await get_event_emitter(
-                {**metadata, 'message_id': list(message_ids.values())[0]},
+                {**metadata, 'message_id': message_targets[0].get('messageId')},
                 update_db=False,
             )
             if event_emitter:
@@ -2154,7 +2207,7 @@ async def chat_completion(
         }
     else:
         # Legacy/direct: single model, synchronous
-        metadata['message_id'] = list(message_ids.values())[0]
+        metadata['message_id'] = message_targets[0].get('messageId')
         return await process_chat(request, form_data, user, metadata, model, tasks)
 
 

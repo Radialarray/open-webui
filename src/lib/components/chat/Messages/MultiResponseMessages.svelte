@@ -67,17 +67,10 @@
 
 	export let topPadding = false;
 
-<<<<<<< HEAD
 	let parentMessage: any;
 	let groupedMessageIds: Record<string, PodcastGroup> = {};
 	let groupedMessageIdsIdx: Record<string, number> = {};
 	let selectedMessageId: string | null = null;
-=======
-	let parentMessage;
-	let groupedMessageIds = {};
-	let groupedMessageIdsIdx = {};
-	let selectedMessageId = null;
->>>>>>> e5065a2b4 (fix: restore chat selector polish)
 
 	let selectedModelIdx: number | null = null;
 	type PodcastMediaCacheEntry = {
@@ -661,7 +654,6 @@
 			{} as Record<string, PodcastGroup>
 		);
 
-<<<<<<< HEAD
 		groupedMessageIdsIdx = parentMessage?.models.reduce(
 			(a, model, modelIdx) => {
 				const idx = groupedMessageIds[modelIdx].messageIds.findIndex((id) => id === messageId);
@@ -679,9 +671,6 @@
 			},
 			{} as Record<string, number>
 		);
-
-=======
->>>>>>> e5065a2b4 (fix: restore chat selector polish)
 		const initialSelectedModelIdx = history.messages[messageId]?.modelIdx;
 		const persistedSelectedModelIdx = parentMessage?.id
 			? focusSelectedModelIdxByParentId.get(parentMessage.id)
@@ -695,31 +684,11 @@
 		await tick();
 	};
 
-<<<<<<< HEAD
 	const selectModel = (modelIdx: string | number) => {
-=======
-	const selectModel = (modelIdx) => {
->>>>>>> e5065a2b4 (fix: restore chat selector polish)
 		selectedModelIdx = Number(modelIdx);
 		if (parentMessage?.id && selectedModelIdx !== null) {
 			focusSelectedModelIdxByParentId.set(parentMessage.id, selectedModelIdx);
 		}
-<<<<<<< HEAD
-=======
-	};
-
-	const selectModelAndOpenGroup = (_messageId, modelIdx) => {
-		selectModel(modelIdx);
-		onGroupClick(_messageId, Number(modelIdx));
-	};
-
-	const onGroupClick = (_messageId, modelIdx) => {
-		if (displayMode === 'podcast' && podcastActiveMessageId !== _messageId) {
-			resetPodcastQueueState();
-		}
-		podcastActiveMessageId = _messageId;
-		selectModel(modelIdx);
->>>>>>> e5065a2b4 (fix: restore chat selector polish)
 	};
 
 	const selectModelAndOpenGroup = (_messageId: string, modelIdx: string | number) => {
@@ -779,7 +748,6 @@
 	$: if (parentMessage?.id && selectedModelIdx !== null) {
 		focusSelectedModelIdxByParentId.set(parentMessage.id, selectedModelIdx);
 	}
-<<<<<<< HEAD
 	$: podcastScopeKey =
 		displayMode === 'podcast' && parentMessage?.id
 			? `${parentMessage.id}:${(parentMessage.childrenIds ?? []).join(':')}`
@@ -827,8 +795,6 @@
 
 		lastPodcastScopeKey = podcastScopeKey;
 	}
-=======
->>>>>>> e5065a2b4 (fix: restore chat selector polish)
 	$: if (displayMode === 'podcast' && podcastSelectedVoice !== lastPodcastSelectedVoice) {
 		lastPodcastSelectedVoice = podcastSelectedVoice;
 		invalidatePodcastAssets(parentMessage?.childrenIds ?? []);
@@ -859,16 +825,11 @@
 		selectedModelIdx !== null &&
 		groupedMessageIds[selectedModelIdx]
 	) {
-<<<<<<< HEAD
 		if (!podcastSession.activeMessageId) {
 			podcastSession = {
 				...podcastSession,
 				activeMessageId: selectedMessageId
 			};
-=======
-		if (!podcastActiveMessageId) {
-			podcastActiveMessageId = selectedMessageId;
->>>>>>> e5065a2b4 (fix: restore chat selector polish)
 		}
 		queuePodcastAudioGeneration(selectedMessageId);
 	}
@@ -1154,20 +1115,20 @@
 						{@const _messageId =
 							groupedMessageIds[modelIdx].messageIds[groupedMessageIdsIdx[modelIdx]]}
 
-					<div
-						class=" snap-center w-full max-w-full m-1 border {selectedModelIdx == Number(modelIdx)
-							? `bg-gray-50 dark:bg-gray-850 border-gray-100 dark:border-gray-800 border-2 ${
-									$mobile ? 'min-w-full' : 'min-w-80'
-								}`
-							: `border-gray-100/30 dark:border-gray-850/30 border-dashed ${
-									$mobile ? 'min-w-full' : 'min-w-80'
-								}`} transition-all p-5 rounded-2xl"
-						on:click={async () => {
-							onGroupClick(_messageId, modelIdx);
-						}}
-					>
-						{#key `${_messageId}:${groupedMessageIdsIdx[modelIdx]}`}
-							{#if message}
+						<div
+							class=" snap-center w-full max-w-full m-1 border {selectedModelIdx == Number(modelIdx)
+								? `bg-gray-50 dark:bg-gray-850 border-gray-100 dark:border-gray-800 border-2 ${
+										$mobile ? 'min-w-full' : 'min-w-80'
+									}`
+								: `border-gray-100/30 dark:border-gray-850/30 border-dashed ${
+										$mobile ? 'min-w-full' : 'min-w-80'
+									}`} transition-all p-5 rounded-2xl"
+							on:click={async () => {
+								onGroupClick(_messageId, modelIdx);
+							}}
+						>
+							{#key `${_messageId}:${groupedMessageIdsIdx[modelIdx]}`}
+								{#if message}
 									<ResponseMessage
 										{chatId}
 										{history}

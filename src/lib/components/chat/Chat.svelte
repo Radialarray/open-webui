@@ -2120,7 +2120,11 @@
 
 		// Create response messages for each selected model
 		// Build message_ids map: {model_id: assistant_message_id}
-		const messageIdsMap: Record<string, string> = {};
+		const messageTargets: Array<{
+			model: string;
+			modelIdx: number;
+			messageId: string;
+		}> = [];
 		for (const [_modelIdx, modelId] of selectedModelIds.entries()) {
 			const model = $models.filter((m) => m.id === modelId).at(0);
 
@@ -2153,7 +2157,11 @@
 				}
 
 				responseMessageIds[`${modelId}-${resolvedModelIdx}`] = responseMessageId;
-				messageIdsMap[modelId] = responseMessageId;
+				messageTargets.push({
+					model: modelId,
+					modelIdx: resolvedModelIdx,
+					messageId: responseMessageId
+				});
 			}
 		}
 		history = history;
@@ -2199,7 +2207,7 @@
 		// Single request — backend fans out to all models
 		const primaryModelId = selectedModelIds[0];
 		const primaryModel = $models.filter((m) => m.id === primaryModelId).at(0);
-		const primaryResponseMessageId = messageIdsMap[primaryModelId];
+		const primaryResponseMessageId = messageTargets[0]?.messageId;
 
 		if (primaryModel && primaryResponseMessageId) {
 			const chatEventEmitter = await getChatEventEmitter(primaryModel.id, _chatId);
@@ -2214,7 +2222,7 @@
 				primaryResponseMessageId,
 				_chatId,
 				{
-					messageIdsMap: selectedModelIds.length > 1 ? messageIdsMap : undefined,
+					messageTargets,
 					regenerationPrompt
 				}
 			);
@@ -2282,11 +2290,15 @@
 		responseMessageId,
 		_chatId,
 		{
-			messageIdsMap,
+			messageTargets,
 			regenerationPrompt,
 			continueResponse = false
 		}: {
-			messageIdsMap?: Record<string, string>;
+			messageTargets?: Array<{
+				model: string;
+				modelIdx: number;
+				messageId: string;
+			}>;
 			regenerationPrompt?: string | null;
 			continueResponse?: boolean;
 		} = {}
@@ -2486,7 +2498,15 @@
 				folder_id: $selectedFolder?.id ?? undefined,
 
 				id: responseMessageId,
-				...(messageIdsMap ? { message_ids: messageIdsMap } : {}),
+				...(messageTargets && messageTargets.length > 0
+					? {
+							message_ids: messageTargets.map(({ model, modelIdx, messageId }) => ({
+								model,
+								modelIdx,
+								messageId
+							}))
+						}
+					: {}),
 				parent_id: userMessage?.parentId ?? null,
 				user_message: userMessage,
 				...(regenerationPrompt ? { regeneration_prompt: regenerationPrompt } : {}),
