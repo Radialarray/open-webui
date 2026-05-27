@@ -273,7 +273,7 @@
 		imageCompressionInChannels = $settings?.imageCompressionInChannels ?? true;
 
 		defaultModelId = $settings?.models?.at(0) ?? '';
-		if ($config?.default_models) {
+		if (!defaultModelId && $config?.default_models) {
 			defaultModelId = $config.default_models.split(',')[0];
 		}
 

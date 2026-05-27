@@ -28,8 +28,9 @@
 					pinnedModels.splice(oldIndex, 1);
 					pinnedModels.splice(newIndex, 0, modelId);
 
-					settings.set({ ...$settings, pinnedModels: pinnedModels });
-					await updateUserSettings(localStorage.token, { ui: $settings });
+					const updatedSettings = { ...$settings, pinnedModels: pinnedModels };
+					settings.set(updatedSettings);
+					await updateUserSettings(localStorage.token, { ui: updatedSettings });
 				}
 			});
 		}
@@ -46,8 +47,9 @@
 
 		if (validModels.length !== modelIds.length) {
 			pinnedModels = validModels;
-			settings.set({ ...$settings, pinnedModels: validModels });
-			await updateUserSettings(localStorage.token, { ui: $settings });
+			const updatedSettings = { ...$settings, pinnedModels: validModels };
+			settings.set(updatedSettings);
+			await updateUserSettings(localStorage.token, { ui: updatedSettings });
 		}
 	};
 
@@ -58,8 +60,9 @@
 			const defaultPinnedModels = ($config?.default_pinned_models).split(',').filter((id) => id);
 			pinnedModels = defaultPinnedModels.filter((id) => $models.find((model) => model.id === id));
 
-			settings.set({ ...$settings, pinnedModels });
-			await updateUserSettings(localStorage.token, { ui: $settings });
+			const updatedSettings = { ...$settings, pinnedModels };
+			settings.set(updatedSettings);
+			await updateUserSettings(localStorage.token, { ui: updatedSettings });
 		}
 
 		// Auto-unpin hidden or deleted models
@@ -99,8 +102,9 @@
 				onUnpin={($settings?.pinnedModels ?? []).includes(modelId)
 					? () => {
 							const pinnedModels = $settings.pinnedModels.filter((id) => id !== modelId);
-							settings.set({ ...$settings, pinnedModels });
-							updateUserSettings(localStorage.token, { ui: $settings });
+							const updatedSettings = { ...$settings, pinnedModels };
+							settings.set(updatedSettings);
+							updateUserSettings(localStorage.token, { ui: updatedSettings });
 						}
 					: null}
 			/>

@@ -1811,7 +1811,7 @@ async def chat_completion(
                         user_message['childrenIds'] = all_assistant_ids
                         history_messages[user_message_id] = user_message
 
-                    for target_model_id, assistant_message_id in message_ids.items():
+                    for model_idx, (target_model_id, assistant_message_id) in enumerate(message_ids.items()):
                         if assistant_message_id:
                             history_messages[assistant_message_id] = {
                                 'id': assistant_message_id,
@@ -1821,6 +1821,7 @@ async def chat_completion(
                                 'content': '',
                                 'done': False,
                                 'model': target_model_id,
+                                'modelIdx': model_idx,
                                 'timestamp': int(time.time()),
                             }
 
@@ -1942,7 +1943,7 @@ async def chat_completion(
                             )
 
                     # Save each assistant placeholder
-                    for target_model_id, assistant_message_id in message_ids.items():
+                    for model_idx, (target_model_id, assistant_message_id) in enumerate(message_ids.items()):
                         if assistant_message_id:
                             await Chats.upsert_message_to_chat_by_id_and_message_id(
                                 chat_id,
@@ -1955,6 +1956,7 @@ async def chat_completion(
                                     'content': '',
                                     'done': False,
                                     'model': target_model_id,
+                                    'modelIdx': model_idx,
                                     'timestamp': int(time.time()),
                                 },
                             )

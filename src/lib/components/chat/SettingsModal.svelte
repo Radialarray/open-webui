@@ -539,9 +539,10 @@
 
 	const saveSettings = async (updated) => {
 		console.log(updated);
-		await settings.set({ ...$settings, ...updated });
+		const updatedSettings = { ...$settings, ...updated };
+		await settings.set(updatedSettings);
 		await models.set(await getModels());
-		await updateUserSettings(localStorage.token, { ui: $settings });
+		await updateUserSettings(localStorage.token, { ui: updatedSettings });
 	};
 
 	const getModels = async () => {

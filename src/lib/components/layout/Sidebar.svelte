@@ -161,8 +161,9 @@
 					const oldIndex = current.indexOf(itemId);
 					current.splice(oldIndex, 1);
 					current.splice(newIndex, 0, itemId);
-					settings.set({ ...$settings, pinnedMenuItems: current });
-					await updateUserSettings(localStorage.token, { ui: $settings });
+					const updatedSettings = { ...$settings, pinnedMenuItems: current };
+					settings.set(updatedSettings);
+					await updateUserSettings(localStorage.token, { ui: updatedSettings });
 				}
 			});
 		}

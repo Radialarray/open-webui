@@ -142,6 +142,8 @@
 	let selectedModels = [''];
 	let atSelectedModel: Model | undefined;
 	let selectedModelIds = [];
+	let persistedSelectedModels = [''];
+	let persistSelectedModelsTimeout: ReturnType<typeof setTimeout> | null = null;
 	$: if (atSelectedModel !== undefined) {
 		selectedModelIds = [atSelectedModel.id];
 	} else {
@@ -272,9 +274,46 @@
 		}
 	};
 
-	$: if (selectedModels && chatIdProp !== '') {
+	$: if (selectedModels) {
 		saveSessionSelectedModels();
 	}
+
+	$: if (!equal(selectedModels, persistedSelectedModels)) {
+		persistSelectedModelsChange();
+	}
+
+	const hasPersistableSelectedModels = (modelIds) => {
+		return (
+			Array.isArray(modelIds) &&
+			modelIds.length > 0 &&
+			!modelIds.includes('') &&
+			modelIds.some((modelId) => modelId)
+		);
+	};
+
+	const persistSelectedModelsChange = () => {
+		if (!hasPersistableSelectedModels(selectedModels)) {
+			return;
+		}
+
+		persistedSelectedModels = structuredClone(selectedModels);
+		saveSessionSelectedModels();
+
+		if (persistSelectedModelsTimeout) {
+			clearTimeout(persistSelectedModelsTimeout);
+		}
+
+		if (!$temporaryChatEnabled && $chatId && !`${$chatId}`.startsWith('local:')) {
+			const nextSelectedModels = structuredClone(selectedModels);
+			persistSelectedModelsTimeout = setTimeout(async () => {
+				await updateChatById(localStorage.token, $chatId, {
+					models: nextSelectedModels
+				}).catch((error) => {
+					console.error('Error persisting selected models:', error);
+				});
+			}, 250);
+		}
+	};
 
 	const saveSessionSelectedModels = () => {
 		const selectedModelsString = JSON.stringify(selectedModels);
@@ -288,6 +327,12 @@
 		sessionStorage.selectedModels = selectedModelsString;
 		console.log('saveSessionSelectedModels', selectedModels, sessionStorage.selectedModels);
 	};
+
+	onDestroy(() => {
+		if (persistSelectedModelsTimeout) {
+			clearTimeout(persistSelectedModelsTimeout);
+		}
+	});
 
 	let oldSelectedModelIds = [''];
 	$: if (!equal(selectedModelIds, oldSelectedModelIds)) {
@@ -2080,6 +2125,7 @@
 			const model = $models.filter((m) => m.id === modelId).at(0);
 
 			if (model) {
+				const resolvedModelIdx = modelIdx ?? _modelIdx;
 				let responseMessageId = uuidv4();
 				let responseMessage = {
 					parentId: parentId,
@@ -2090,7 +2136,7 @@
 					done: false,
 					model: model.id,
 					modelName: model.name ?? model.id,
-					modelIdx: modelIdx ? modelIdx : _modelIdx,
+					modelIdx: resolvedModelIdx,
 					timestamp: Math.floor(Date.now() / 1000) // Unix epoch
 				};
 
@@ -2106,7 +2152,7 @@
 					];
 				}
 
-				responseMessageIds[`${modelId}-${modelIdx ? modelIdx : _modelIdx}`] = responseMessageId;
+				responseMessageIds[`${modelId}-${resolvedModelIdx}`] = responseMessageId;
 				messageIdsMap[modelId] = responseMessageId;
 			}
 		}

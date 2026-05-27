@@ -555,6 +555,9 @@ class ChatTable:
         if chat is None:
             return None
 
+        message = dict(message)
+        set_current_id = message.pop('__set_current_id__', None)
+
         # Sanitize message content for null characters before upserting
         if isinstance(message.get('content'), str):
             message['content'] = sanitize_text_for_db(message['content'])
@@ -563,7 +566,9 @@ class ChatTable:
         chat = chat.chat
         history = chat.get('history', {})
 
-        if message_id in history.get('messages', {}):
+        message_exists = message_id in history.get('messages', {})
+
+        if message_exists:
             history['messages'][message_id] = {
                 **history['messages'][message_id],
                 **message,
@@ -571,7 +576,11 @@ class ChatTable:
         else:
             history['messages'][message_id] = message
 
-        history['currentId'] = message_id
+        if set_current_id is None:
+            set_current_id = not message_exists
+
+        if set_current_id:
+            history['currentId'] = message_id
 
         chat['history'] = history
 

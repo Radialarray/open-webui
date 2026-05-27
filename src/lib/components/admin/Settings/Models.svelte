@@ -320,8 +320,9 @@
 			pinnedModels = [...new Set([...pinnedModels, modelId])];
 		}
 
-		settings.set({ ...$settings, pinnedModels: pinnedModels });
-		await updateUserSettings(localStorage.token, { ui: $settings });
+		const updatedSettings = { ...$settings, pinnedModels: pinnedModels };
+		settings.set(updatedSettings);
+		await updateUserSettings(localStorage.token, { ui: updatedSettings });
 	};
 
 	onMount(async () => {

@@ -25,8 +25,9 @@
 
 	const closeModal = async () => {
 		localStorage.version = $config.version;
-		await settings.set({ ...$settings, ...{ version: $config.version } });
-		await updateUserSettings(localStorage.token, { ui: $settings });
+		const updatedSettings = { ...$settings, ...{ version: $config.version } };
+		await settings.set(updatedSettings);
+		await updateUserSettings(localStorage.token, { ui: updatedSettings });
 		show = false;
 	};
 

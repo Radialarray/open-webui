@@ -33,8 +33,9 @@
 			toast.error($i18n.t('Choose a model before saving...'));
 			return;
 		}
-		settings.set({ ...$settings, models: selectedModels });
-		await updateUserSettings(localStorage.token, { ui: $settings });
+		const updatedSettings = { ...$settings, models: selectedModels };
+		settings.set(updatedSettings);
+		await updateUserSettings(localStorage.token, { ui: updatedSettings });
 
 		toast.success($i18n.t('Default model updated'));
 	};
@@ -48,8 +49,9 @@
 			pinnedModels = [...new Set([...pinnedModels, modelId])];
 		}
 
-		settings.set({ ...$settings, pinnedModels: pinnedModels });
-		await updateUserSettings(localStorage.token, { ui: $settings });
+		const updatedSettings = { ...$settings, pinnedModels: pinnedModels };
+		settings.set(updatedSettings);
+		await updateUserSettings(localStorage.token, { ui: updatedSettings });
 	};
 
 	$: if (selectedModels.length > 0 && $models.length > 0) {
